@@ -1,0 +1,923 @@
+// Islo settings app — follows the Windows light/dark theme (the island is always dark).
+// Built from the Islo design system: monochrome controls, feature color only on
+// feature glyphs, "Saved" confirmation per row, calm motion (no bounce).
+
+import { Icon, LineIcon, Icons, BrandMark } from "icons.slint";
+
+export global S {
+    in property <bool> dark: true;
+    in property <bool> reduce: false;
+    out property <color> surface-100: dark ? #000000 : #f3f3f3;
+    out property <color> surface-200: dark ? #111111 : #ffffff;
+    out property <color> surface-300: dark ? #2a2a2a : #ebebeb;
+    out property <color> hairline: dark ? #1a1a1a : #e5e5e5;
+    out property <color> border: dark ? #7a7a7a : #858585;
+    out property <color> ink: dark ? #ffffff : #0a0a0a;
+    out property <color> ink-muted: dark ? #b4b4b4 : #5e5e5e;
+    out property <color> ink-faint: dark ? #949494 : #696969;
+    out property <color> primary: dark ? #ffffff : #0a0a0a;
+    out property <color> on-primary: dark ? #000000 : #ffffff;
+    out property <color> positive: dark ? #46a758 : #2e7d32;
+    out property <color> rose: dark ? #fc90bc : #b54879;
+    out property <color> orange: dark ? #f99f55 : #ab5e0c;
+    out property <color> green: dark ? #6fd087 : #0e8c41;
+    out property <color> blue: dark ? #71bfff : #037ac0;
+    out property <color> indigo: dark ? #a9b0fd : #6566c9;
+    out property <duration> instant: reduce ? 0ms : 90ms;
+    out property <duration> quick: reduce ? 0ms : 180ms;
+}
+
+component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled();
+    width: 40px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: !enabled ? S.hairline : checked ? S.primary : S.border;
+    background: !enabled ? S.surface-300 : checked ? S.primary : S.surface-200;
+    animate background, border-color { duration: S.quick; }
+    knob := Rectangle {
+        width: ta.pressed && root.enabled ? 16px : 12px;
+        height: 12px;
+        y: 3px;
+        x: root.checked ? root.width - self.width - 4px : 3px;
+        border-radius: 6px;
+        background: !root.enabled ? S.border : root.checked ? S.on-primary : S.ink-muted;
+        animate x, width, background { duration: S.quick; easing: ease-out; }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
+component Slider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in-out property <float> value: 50;
+    in property <bool> enabled: true;
+    callback changed(float);
+    callback released();
+    width: 200px;
+    height: 20px;
+    property <float> pct: (value - minimum) / (maximum - minimum);
+    Rectangle {
+        y: 8px;
+        height: 4px;
+        border-radius: 2px;
+        background: S.surface-300;
+    }
+    Rectangle {
+        x: 0;
+        y: 8px;
+        height: 4px;
+        width: (root.width - 20px) * root.pct + 10px;
+        border-radius: 2px;
+        background: root.enabled ? S.primary : S.border;
+    }
+    Rectangle {
+        x: (root.width - 20px) * root.pct;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: S.surface-200;
+        border-width: 1px;
+        border-color: S.border;
+        Rectangle {
+            width: ta.pressed ? 10px : 12px;
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: root.enabled ? S.primary : S.border;
+            animate width { duration: S.instant; }
+        }
+    }
+    function set-from(px: length) {
+        if (!root.enabled) { return; }
+        let raw = root.minimum + clamp((px - 10px) / (root.width - 20px), 0, 1) * (root.maximum - root.minimum);
+        let v = round(raw / root.step) * root.step;
+        if (v != root.value) {
+            root.value = v;
+            root.changed(v);
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) { set-from(self.mouse-x); }
+            if (e.kind == PointerEventKind.up) { root.released(); }
+        }
+        moved => { set-from(self.mouse-x); }
+    }
+}
+
+component Segmented inherits HorizontalLayout {
+    in property <[string]> options;
+    in-out property <int> current;
+    callback selected(int);
+    spacing: 4px;
+    for opt[i] in root.options : Rectangle {
+        height: 32px;
+        width: lbl.preferred-width + 24px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: root.current == i ? S.primary : S.border;
+        background: root.current == i ? S.primary : seg-ta.has-hover ? S.surface-300 : S.surface-200;
+        animate background { duration: S.instant; }
+        lbl := Text {
+            text: opt;
+            font-size: 13px;
+            font-weight: 600;
+            color: root.current == i ? S.on-primary : S.ink;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: parent.width;
+            height: parent.height;
+        }
+        seg-ta := TouchArea {
+            clicked => {
+                root.current = i;
+                root.selected(i);
+            }
+        }
+    }
+}
+
+component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 32px;
+    width: lbl.preferred-width + 24px;
+    border-radius: 4px;
+    border-width: primary ? 0px : 1px;
+    border-color: S.border;
+    background: primary ? S.primary : ta.has-hover ? S.surface-300 : S.surface-200;
+    animate background { duration: S.instant; }
+    lbl := Text {
+        text: root.text;
+        font-size: 14px;
+        font-weight: 600;
+        color: root.primary ? S.on-primary : S.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component TextField inherits Rectangle {
+    in-out property <string> text;
+    callback edited();
+    width: 200px;
+    height: 32px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: ti.has-focus ? S.primary : S.border;
+    background: S.surface-200;
+    ti := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text <=> root.text;
+        color: S.ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        single-line: true;
+        edited => { root.edited(); }
+    }
+}
+
+component Badge inherits Rectangle {
+    in property <string> text: "New";
+    height: 20px;
+    width: lbl.preferred-width + 16px;
+    border-radius: 10px;
+    background: S.surface-300;
+    lbl := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: S.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+// A settings row: name + description on the left, a control on the right,
+// and a short "Saved" confirmation after a change.
+component Row inherits Rectangle {
+    in property <string> name;
+    in property <string> desc;
+    in property <bool> first: false;
+    in property <bool> saved: false;
+    in property <bool> new-badge: false;
+    in property <color> glyph-color: transparent;
+    in property <string> glyph: "";
+    // Wrapped descriptions don't grow the row by themselves, so long ones ask for more room.
+    in property <length> min-h: 56px;
+    min-height: root.min-h;
+    background: ta.has-hover ? S.surface-300 : transparent;
+    animate background { duration: S.instant; }
+    ta := TouchArea { }
+    if !root.first : Rectangle {
+        y: 0;
+        height: 1px;
+        background: S.hairline;
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 16px;
+        if root.glyph != "" : Icon {
+            d: root.glyph;
+            fill: root.glyph-color;
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.name;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: S.ink;
+                    vertical-alignment: center;
+                }
+                if root.new-badge : Badge { }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.desc != "" : Text {
+                text: root.desc;
+                font-size: 12px;
+                color: S.ink-muted;
+                wrap: word-wrap;
+            }
+        }
+        Text {
+            text: "Saved";
+            font-size: 12px;
+            color: S.positive;
+            vertical-alignment: center;
+            opacity: root.saved ? 1 : 0;
+            animate opacity { duration: S.quick; }
+        }
+        @children
+    }
+}
+
+component Card inherits Rectangle {
+    background: S.surface-200;
+    border-width: 1px;
+    border-color: S.hairline;
+    border-radius: 8px;
+    clip: true;
+    VerticalLayout {
+        @children
+    }
+}
+
+component SectionTitle inherits Text {
+    font-size: 16px;
+    font-weight: 600;
+    color: S.ink;
+}
+
+component NavItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 36px;
+    border-radius: 4px;
+    background: active ? S.surface-300 : ta.has-hover ? S.surface-300.with-alpha(0.5) : transparent;
+    animate background { duration: S.instant; }
+    // Windows 11 style selection pill
+    Rectangle {
+        visible: root.active;
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: S.primary;
+    }
+    Text {
+        x: 14px;
+        text: root.text;
+        font-size: 14px;
+        font-weight: root.active ? 600 : 400;
+        color: S.ink;
+        vertical-alignment: center;
+        height: parent.height;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    title: "Islo Settings";
+    preferred-width: 1000px;
+    preferred-height: 720px;
+    min-width: 760px;
+    min-height: 480px;
+    default-font-family: "Segoe UI Variable Text";
+    background: S.surface-100;
+
+    in property <bool> dark: true;
+    in property <bool> reduce-ui: false;
+    changed dark => { S.dark = root.dark; }
+    changed reduce-ui => { S.reduce = root.reduce-ui; }
+    init => {
+        S.dark = root.dark;
+        S.reduce = root.reduce-ui;
+    }
+
+    in-out property <int> page: 1; // 0 General, 1 Appearance, 2 Modules, 3 Shortcuts, 4 About
+    in property <string> saved-key: "";
+
+    // ---- appearance ----
+    in-out property <float> width-px: 200;
+    in-out property <int> edge: 0;
+    in-out property <int> side-style: 0;
+    in-out property <bool> hover-expand: true;
+    in-out property <float> hover-delay: 300;
+    in-out property <int> theme: 0;
+    in-out property <bool> reduce-motion: false;
+    in property <bool> system-reduce-motion: false;
+    in-out property <int> show-on: 0;
+    in-out property <bool> pill-glance: true;
+    in-out property <bool> header-date: true;
+    in-out property <int> featured: 3; // 0 none, 1 media, 2 timer, 3 pet, 4 focus
+    // ---- modules ----
+    in-out property <bool> mod-media: true;
+    in-out property <bool> mod-lyrics: true;
+    in-out property <float> lyric-lines: 3;
+    in-out property <bool> mod-hud: true;
+    in-out property <bool> mod-battery: true;
+    in-out property <bool> mod-shelf: true;
+    in-out property <bool> mod-notifications: false;
+    in property <bool> notifications-available: false;
+    in property <string> notifications-desc: "";
+    in-out property <bool> mod-timer: true;
+    in-out property <bool> mod-privacy: true;
+    in-out property <bool> mod-focus: true;
+    in-out property <bool> mod-pet: true;
+    in-out property <bool> pet-nearby: true;
+    in-out property <bool> pet-peek: true;
+    in-out property <bool> pet-track: true;
+    in-out property <string> pet-name: "Mochi";
+    in-out property <bool> hide-fullscreen: true;
+    in-out property <bool> saver-pause: true;
+    // ---- general ----
+    in-out property <bool> autostart: false;
+    in property <string> memory-text: "";
+    in property <string> version: "0.2.0";
+    // ---- updates ----
+    in-out property <bool> update-check: true;
+    in property <int> update-state: 0; // 0 idle, 1 checking, 2 available, 3 installing, 4 up to date, 5 error
+    in property <string> update-version: ""; // the new version, when available
+    in property <string> update-desc: "Islo looks for a new version once a day.";
+    // phases still being built hide their rows
+    in property <bool> has-lyrics: false;
+    in property <bool> has-pet: false;
+    in property <bool> has-live: false; // timer / mic / focus indicators
+
+    callback changed(string);
+    callback reset-position();
+    callback restore-defaults();
+    callback quit-app();
+    callback check-update();
+    callback install-update();
+    callback open-releases();
+
+    HorizontalLayout {
+        // ---------- sidebar ----------
+        VerticalLayout {
+            width: 240px;
+            padding: 16px;
+            padding-top: 20px;
+            spacing: 4px;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-bottom: 16px;
+                spacing: 10px;
+                BrandMark {
+                    width: 36px;
+                    height: 36px;
+                    on-dark: S.dark;
+                }
+                VerticalLayout {
+                    Text {
+                        text: "Islo";
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: S.ink;
+                    }
+                    Text {
+                        text: "Settings";
+                        font-size: 12px;
+                        color: S.ink-muted;
+                    }
+                }
+            }
+            NavItem { text: "General"; active: root.page == 0; clicked => { root.page = 0; } }
+            NavItem { text: "Appearance"; active: root.page == 1; clicked => { root.page = 1; } }
+            NavItem { text: "Modules"; active: root.page == 2; clicked => { root.page = 2; } }
+            NavItem { text: "Shortcuts"; active: root.page == 3; clicked => { root.page = 3; } }
+            NavItem { text: "About"; active: root.page == 4; clicked => { root.page = 4; } }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        // ---------- page ----------
+        Flickable {
+            horizontal-stretch: 1;
+            content-height: pagebody.preferred-height;
+            pagebody := VerticalLayout {
+                width: parent.width;
+                padding: 32px;
+                padding-top: 28px;
+                spacing: 24px;
+                alignment: start;
+
+                Text {
+                    text: root.page == 0 ? "General" : root.page == 1 ? "Appearance" : root.page == 2 ? "Modules" : root.page == 3 ? "Shortcuts" : "About";
+                    font-size: 28px;
+                    font-weight: 600;
+                    color: S.ink;
+                }
+
+                // ======== General ========
+                if root.page == 0 : VerticalLayout {
+                    spacing: 12px;
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Start with Windows";
+                            desc: "Islo opens quietly when you sign in.";
+                            saved: root.saved-key == "autostart";
+                            Toggle { y: 18px; checked <=> root.autostart; toggled => { root.changed("autostart"); } }
+                        }
+                        Row {
+                            name: "Open settings";
+                            desc: "Right-click the island, or use the Islo icon in the system tray.";
+                        }
+                        Row {
+                            name: "Quit Islo";
+                            desc: "The island goes away until you start Islo again.";
+                            Button { y: 12px; text: "Quit"; clicked => { root.quit-app(); } }
+                        }
+                    }
+                }
+
+                // ======== Appearance ========
+                if root.page == 1 : VerticalLayout {
+                    spacing: 12px;
+                    SectionTitle { text: "Island"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Island width";
+                            desc: "The island on your screen resizes as you drag.";
+                            saved: root.saved-key == "width";
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Slider {
+                                    y: 18px;
+                                    minimum: 160;
+                                    maximum: 300;
+                                    step: 10;
+                                    value <=> root.width-px;
+                                    changed => { root.changed("width"); }
+                                }
+                                Text {
+                                    width: 52px;
+                                    text: round(root.width-px) + " px";
+                                    font-size: 13px;
+                                    color: S.ink-muted;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                        Row {
+                            name: "Edge";
+                            min-h: 78px;
+                            desc: "Drag the island to any edge of the screen, or pick one here. On the left and right it turns vertical.";
+                            saved: root.saved-key == "edge";
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Segmented {
+                                    y: 12px;
+                                    options: ["Top", "Bottom", "Left", "Right"];
+                                    current <=> root.edge;
+                                    selected => { root.changed("edge"); }
+                                }
+                                Button { y: 12px; text: "Reset position"; clicked => { root.reset-position(); } }
+                            }
+                        }
+                        Row {
+                            name: "On the left or right edge";
+                            min-h: 78px;
+                            desc: "The island shrinks to show only what's live. Hover a glyph to open that feature.";
+                            saved: root.saved-key == "side";
+                            Segmented {
+                                y: 12px;
+                                options: ["Icon tab", "Thin sliver", "Full vertical pill"];
+                                current <=> root.side-style;
+                                selected => { root.changed("side"); }
+                            }
+                        }
+                        Row {
+                            name: "Expand on hover";
+                            desc: "The island opens when your pointer rests on it. Off: click to open.";
+                            saved: root.saved-key == "hover";
+                            Toggle { y: 18px; checked <=> root.hover-expand; toggled => { root.changed("hover"); } }
+                        }
+                        Row {
+                            name: "Hover delay";
+                            desc: root.hover-expand ? "How long your pointer rests before the island opens." : "Turn on Expand on hover to change this.";
+                            saved: root.saved-key == "delay";
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Slider {
+                                    y: 18px;
+                                    minimum: 100;
+                                    maximum: 1000;
+                                    step: 50;
+                                    enabled: root.hover-expand;
+                                    value <=> root.hover-delay;
+                                    changed => { root.changed("delay"); }
+                                }
+                                Text {
+                                    width: 52px;
+                                    text: round(root.hover-delay) + " ms";
+                                    font-size: 13px;
+                                    color: S.ink-muted;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                    }
+                    SectionTitle { text: "At a glance"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Date and battery in the pill";
+                            min-h: 64px;
+                            desc: "When nothing is live, the small island shows a feature on the left and the date and battery on the right.";
+                            saved: root.saved-key == "glance";
+                            Toggle { y: 18px; checked <=> root.pill-glance; toggled => { root.changed("glance"); } }
+                        }
+                        Row {
+                            name: "Featured on the left";
+                            min-h: 78px;
+                            desc: root.pill-glance ? "What sits on the left of the pill while it's quiet. Live activities still take over." : "Turn on Date and battery in the pill to change this.";
+                            saved: root.saved-key == "featured";
+                            Segmented {
+                                y: 12px;
+                                options: ["None", "Media", "Timer", "Pet", "Focus"];
+                                current <=> root.featured;
+                                selected => { root.changed("featured"); }
+                            }
+                        }
+                        Row {
+                            name: "Date in the open island";
+                            desc: "Shows today's date next to the battery at the top of the expanded island.";
+                            saved: root.saved-key == "hdate";
+                            Toggle { y: 18px; checked <=> root.header-date; toggled => { root.changed("hdate"); } }
+                        }
+                    }
+                    SectionTitle { text: "Look and motion"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "App theme";
+                            min-h: 78px;
+                            desc: "Changes this window. The island stays black in every theme.";
+                            saved: root.saved-key == "theme";
+                            Segmented {
+                                y: 12px;
+                                options: ["Use Windows setting", "Light", "Dark"];
+                                current <=> root.theme;
+                                selected => { root.changed("theme"); }
+                            }
+                        }
+                        Row {
+                            name: "Reduce animations";
+                            min-h: 78px;
+                            desc: root.system-reduce-motion ? "Windows “Animation effects” is off, so Islo already uses quick fades." : "Swaps the bounce for a quick fade and stops the waveform. Follows Windows “Animation effects” until you change it.";
+                            saved: root.saved-key == "reduce";
+                            Toggle { y: 18px; checked <=> root.reduce-motion; toggled => { root.changed("reduce"); } }
+                        }
+                        Row {
+                            name: "Show on";
+                            min-h: 78px;
+                            desc: "Where the island appears when more than one display is connected.";
+                            saved: root.saved-key == "showon";
+                            Segmented {
+                                y: 12px;
+                                options: ["Main display", "All displays", "Display with the pointer"];
+                                current <=> root.show-on;
+                                selected => { root.changed("showon"); }
+                            }
+                        }
+                    }
+                }
+
+                // ======== Modules ========
+                if root.page == 2 : VerticalLayout {
+                    spacing: 12px;
+                    Card {
+                        Row {
+                            first: true;
+                            glyph: Icons.note;
+                            glyph-color: S.rose;
+                            name: "Media controls";
+                            desc: "Show what's playing from Spotify, browsers and other apps.";
+                            saved: root.saved-key == "media";
+                            Toggle { y: 18px; checked <=> root.mod-media; toggled => { root.changed("media"); } }
+                        }
+                        if root.has-lyrics : Row {
+                            glyph: Icons.note;
+                            glyph-color: S.rose;
+                            name: "Lyrics";
+                            new-badge: true;
+                            desc: "Show synced lyrics in the island while a song plays, when they can be found.";
+                            saved: root.saved-key == "lyrics";
+                            Toggle { y: 18px; checked <=> root.mod-lyrics; toggled => { root.changed("lyrics"); } }
+                        }
+                        if root.has-lyrics : Row {
+                            name: "Lyric lines";
+                            desc: root.mod-lyrics ? "Lines shown while you are not hovering. Hover the island to see the whole song." : "Turn on Lyrics to change this.";
+                            saved: root.saved-key == "lines";
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Slider {
+                                    y: 18px;
+                                    minimum: 1;
+                                    maximum: 10;
+                                    step: 1;
+                                    enabled: root.mod-lyrics;
+                                    value <=> root.lyric-lines;
+                                    changed => { root.changed("lines"); }
+                                }
+                                Text {
+                                    width: 52px;
+                                    text: root.lyric-lines == 1 ? "1 line" : round(root.lyric-lines) + " lines";
+                                    font-size: 13px;
+                                    color: S.ink-muted;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                        Row {
+                            glyph: Icons.speaker;
+                            glyph-color: S.ink;
+                            name: "Volume and brightness";
+                            desc: "Replace the Windows flyout with a quiet pill in the island.";
+                            saved: root.saved-key == "hud";
+                            Toggle { y: 18px; checked <=> root.mod-hud; toggled => { root.changed("hud"); } }
+                        }
+                        Row {
+                            glyph: Icons.bolt;
+                            glyph-color: S.green;
+                            name: "Battery and charging";
+                            desc: "Show the charge when you plug in, and warn when the battery runs low.";
+                            saved: root.saved-key == "battery";
+                            Toggle { y: 18px; checked <=> root.mod-battery; toggled => { root.changed("battery"); } }
+                        }
+                        Row {
+                            name: "File shelf";
+                            new-badge: true;
+                            desc: "Drag files to the island to keep them handy.";
+                            saved: root.saved-key == "shelf";
+                            Toggle { y: 18px; checked <=> root.mod-shelf; toggled => { root.changed("shelf"); } }
+                        }
+                        if root.has-live : Row {
+                            name: "Timers";
+                            desc: "Start a timer from the opened island; it counts down in the pill.";
+                            saved: root.saved-key == "timer";
+                            Toggle { y: 18px; checked <=> root.mod-timer; toggled => { root.changed("timer"); } }
+                        }
+                        if root.has-live : Row {
+                            name: "Mic and camera";
+                            desc: "A steady dot while an app uses them.";
+                            saved: root.saved-key == "privacy";
+                            Toggle { y: 18px; checked <=> root.mod-privacy; toggled => { root.changed("privacy"); } }
+                        }
+                        if root.has-live : Row {
+                            glyph: Icons.moon;
+                            glyph-color: S.indigo;
+                            name: "Focus";
+                            desc: "Show when Windows Focus is on.";
+                            saved: root.saved-key == "focus";
+                            Toggle { y: 18px; checked <=> root.mod-focus; toggled => { root.changed("focus"); } }
+                        }
+                        Row {
+                            name: "Notifications";
+                            desc: root.notifications-desc;
+                            saved: root.saved-key == "notifications";
+                            Toggle {
+                                y: 18px;
+                                enabled: root.notifications-available;
+                                checked <=> root.mod-notifications;
+                                toggled => { root.changed("notifications"); }
+                            }
+                        }
+                    }
+
+                    if root.has-pet : SectionTitle { text: "Pet"; }
+                    if root.has-pet : Card {
+                        Row {
+                            first: true;
+                            name: "Pet";
+                            new-badge: true;
+                            min-h: 64px;
+                            desc: "Mochi, the Islo mascot, lives in the island. It naps when you stop moving the pointer and never moves in full-screen apps.";
+                            saved: root.saved-key == "pet";
+                            Toggle { y: 18px; checked <=> root.mod-pet; toggled => { root.changed("pet"); } }
+                        }
+                        Row {
+                            name: "Name";
+                            desc: "Friends see this name when your pet visits.";
+                            saved: root.saved-key == "petname";
+                            TextField { y: 12px; text <=> root.pet-name; edited => { root.changed("petname"); } }
+                        }
+                        Row {
+                            name: "Peek around the island";
+                            min-h: 64px;
+                            desc: root.reduce-motion || root.system-reduce-motion ? "Off while Reduce animations is on." : "Now and then, while the island is quiet, Mochi peeks out from under it or around a side. Click Mochi and it hides.";
+                            saved: root.saved-key == "peek";
+                            Toggle { y: 18px; checked <=> root.pet-peek; toggled => { root.changed("peek"); } }
+                        }
+                        Row {
+                            name: "Eyes follow the pointer";
+                            min-h: 64px;
+                            desc: "Mochi watches your pointer while it's on screen. Turn this off and Mochi only wakes when you hover the island.";
+                            saved: root.saved-key == "track";
+                            Toggle { y: 18px; checked <=> root.pet-track; toggled => { root.changed("track"); } }
+                        }
+                        Row {
+                            name: "Visit friends nearby";
+                            desc: "Uses Bluetooth to find Islo on PCs in the same room. Nothing goes over the internet.";
+                            saved: root.saved-key == "nearby";
+                            Toggle { y: 18px; checked <=> root.pet-nearby; toggled => { root.changed("nearby"); } }
+                        }
+                    }
+
+                    SectionTitle { text: "Full-screen apps"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Hide in full-screen apps";
+                            desc: "The island steps aside for games, videos and presentations, and comes back when you leave.";
+                            saved: root.saved-key == "fullscreen";
+                            Toggle { y: 18px; checked <=> root.hide-fullscreen; toggled => { root.changed("fullscreen"); } }
+                        }
+                        Row {
+                            name: "Pause animations on battery saver";
+                            desc: "Stops the waveform and other loops while Windows saves power.";
+                            saved: root.saved-key == "saver";
+                            Toggle { y: 18px; checked <=> root.saver-pause; toggled => { root.changed("saver"); } }
+                        }
+                    }
+
+                    SectionTitle { text: "Reset"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Restore default settings";
+                            desc: "Puts every setting back the way Islo shipped.";
+                            Button { y: 12px; text: "Restore defaults"; clicked => { root.restore-defaults(); } }
+                        }
+                    }
+                }
+
+                // ======== Shortcuts ========
+                if root.page == 3 : VerticalLayout {
+                    spacing: 12px;
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Open or close the island";
+                            desc: "Works from any app.";
+                            Badge { y: 18px; text: "Win + Alt + I"; }
+                        }
+                        Row {
+                            name: "Close the island";
+                            desc: "While the island is open.";
+                            Badge { y: 18px; text: "Esc"; }
+                        }
+                        Row {
+                            name: "Change volume";
+                            desc: "Scroll on the island.";
+                            Badge { y: 18px; text: "Scroll"; }
+                        }
+                        Row {
+                            name: "Move the island";
+                            desc: "Drag it to any edge of the screen.";
+                            Badge { y: 18px; text: "Drag"; }
+                        }
+                    }
+                }
+
+                // ======== About ========
+                if root.page == 4 : VerticalLayout {
+                    spacing: 12px;
+                    HorizontalLayout {
+                        padding-top: 4px;
+                        padding-bottom: 8px;
+                        spacing: 14px;
+                        alignment: start;
+                        BrandMark {
+                            width: 64px;
+                            height: 64px;
+                            on-dark: S.dark;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            Text { text: "Islo"; font-size: 28px; font-weight: 600; color: S.ink; }
+                            Text { text: "Version " + root.version; font-size: 12px; color: S.ink-muted; }
+                        }
+                    }
+                    SectionTitle { text: "Updates"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: root.update-state == 2 ? "Version " + root.update-version + " is available"
+                                : root.update-state == 1 ? "Checking for updates…"
+                                : root.update-state == 3 ? "Installing " + root.update-version + "…"
+                                : root.update-state == 4 ? "Islo is up to date"
+                                : root.update-state == 5 ? "Couldn't update"
+                                : "Updates";
+                            desc: root.update-desc;
+                            new-badge: root.update-state == 2;
+                            min-h: 64px;
+                            if root.update-state == 2 : Button {
+                                y: 16px;
+                                text: "Install and restart";
+                                primary: true;
+                                clicked => { root.install-update(); }
+                            }
+                            if root.update-state != 1 && root.update-state != 2 && root.update-state != 3 : Button {
+                                y: 16px;
+                                text: root.update-state == 5 ? "Try again" : "Check now";
+                                clicked => { root.check-update(); }
+                            }
+                        }
+                        Row {
+                            name: "Check automatically";
+                            desc: "Look for a new version when Islo starts and once a day. Nothing installs until you choose to.";
+                            saved: root.saved-key == "update_check";
+                            min-h: 64px;
+                            Toggle { y: 22px; checked <=> root.update-check; toggled => { root.changed("update_check"); } }
+                        }
+                        Row {
+                            name: "Release notes";
+                            desc: "See what changed in each version on GitHub.";
+                            Button { y: 12px; text: "Open"; clicked => { root.open-releases(); } }
+                        }
+                    }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "What it is";
+                            desc: "A Dynamic Island for Windows, written in Rust and Slint.";
+                        }
+                        Row {
+                            name: "Memory";
+                            desc: root.memory-text;
+                        }
+                        Row {
+                            name: "Lyrics";
+                            desc: "Synced lyrics come from LRCLIB (lrclib.net), a free, open lyrics database.";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

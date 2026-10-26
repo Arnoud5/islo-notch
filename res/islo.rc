@@ -1,0 +1,27 @@
+// Source of res/islo.res (MSVC) and res/islo_res.o (MinGW). Rebuild with:
+//   windres res/islo.rc -O coff -o res/islo_res.o
+//   windres res/islo.rc -O res  -o res/islo.res
+1 ICON "islo.ico"
+2 ICON "tray-white.ico"
+3 ICON "tray-black.ico"
+1 24 "islo.manifest"
+1 VERSIONINFO
+FILEVERSION 0,3,7,0
+PRODUCTVERSION 0,3,7,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "FileDescription", "Islo - Dynamic Island for Windows"
+      VALUE "ProductName", "Islo"
+      VALUE "FileVersion", "0.3.7"
+      VALUE "ProductVersion", "0.3.7"
+      VALUE "OriginalFilename", "Islo.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

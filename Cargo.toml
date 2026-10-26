@@ -1,0 +1,85 @@
+[package]
+name = "islo"
+version = "0.3.8"
+edition = "2024"
+description = "A macOS-style notch / Dynamic Island for Windows"
+build = "build.rs"
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "renderer-software"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-core = "0.62"
+windows-future = "0.3"
+windows = { version = "0.62", features = [
+  "ApplicationModel",
+  "Devices_Bluetooth",
+  "Devices_Bluetooth_Advertisement",
+  "Devices_Power",
+  "Foundation",
+  "Foundation_Collections",
+  "Media_Control",
+  "Storage_Streams",
+  "UI_Notifications",
+  "UI_Notifications_Management",
+  "UI_Shell",
+  "Graphics_Imaging",
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_Storage_Packaging_Appx",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_DataExchange",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Power",
+  "Win32_System_Registry",
+  "Win32_Networking_WinHttp",
+  "Win32_Security",
+  "Win32_Security_Authentication_Identity",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Rpc",
+  "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_System_Wmi",
+  "Win32_System_WinRT",
+  "Win32_System_ProcessStatus",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Controls",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+
+[profile.dev]
+opt-level = 1
+
+[target.'cfg(not(windows))'.dependencies]
+# Only used by the UI snapshot tool on Linux/macOS (renders states to PNG for review).
+png = "0.17"
+
+# Islo carries a two-line fix for Slint's CPU renderer: a fallback font that its
+# parsers can't read (some Windows symbol/emoji/CJK fonts) used to abort the app.
+# Same version as upstream; see vendor/i-slint-renderer-software/lib.rs "Islo patch".
+[patch.crates-io]
+i-slint-renderer-software = { path = "vendor/i-slint-renderer-software" }

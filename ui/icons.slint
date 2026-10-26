@@ -1,0 +1,134 @@
+// Vector icons drawn with Slint paths (no image files, nothing to load at runtime).
+// All icons use a 24x24 viewbox so they scale crisply at any DPI.
+
+export component Icon inherits Path {
+    in property <string> d;
+    commands: d;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    fill: white;
+    stroke-width: 0px;
+}
+
+/// Line-style glyph (the design's shelf / check / arrow icons are stroked).
+export component LineIcon inherits Path {
+    in property <string> d;
+    in property <brush> ink: white;
+    in property <length> weight: 1.6px;
+    commands: d;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    fill: transparent;
+    stroke: ink;
+    stroke-width: weight;
+}
+
+export global Icons {
+    // filled
+    out property <string> play: "M7 4.5v15L19.5 12z";
+    out property <string> pause: "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z";
+    out property <string> next: "M16 5h2v14h-2zM4 5v14l11-7z";
+    out property <string> prev: "M6 5h2v14H6zM20 5v14L9 12z";
+    out property <string> note: "M19 3.5v11.25a3.25 3.25 0 1 1-2-3V7.6l-8 1.9v7.25a3.25 3.25 0 1 1-2-3V6.3a1 1 0 0 1 .77-.97l10-2.37A1 1 0 0 1 19 3.5z";
+    out property <string> speaker: "M3 9h4l5-4v14l-5-4H3zM15 8.5a5 5 0 0 1 0 7l-1.4-1.4a3 3 0 0 0 0-4.2zM17.8 5.7a9 9 0 0 1 0 12.6l-1.4-1.4a7 7 0 0 0 0-9.8z";
+    out property <string> speaker-mute: "M3 9h4l5-4v14l-5-4H3zM14.3 9.1l1.4-1.4 2.3 2.3 2.3-2.3 1.4 1.4-2.3 2.3 2.3 2.3-1.4 1.4-2.3-2.3-2.3 2.3-1.4-1.4 2.3-2.3z";
+    out property <string> sun: "M12 7.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9zM11 1h2v4h-2zM11 19h2v4h-2zM1 11h4v2H1zM19 11h4v2h-4zM4.2 5.6l1.4-1.4 2.8 2.8-1.4 1.4zM15.6 17l1.4-1.4 2.8 2.8-1.4 1.4zM4.2 18.4l2.8-2.8 1.4 1.4-2.8 2.8zM15.6 7l2.8-2.8 1.4 1.4-2.8 2.8z";
+    out property <string> bolt: "M13 2 4 14h6l-1 8 9-12h-6z";
+    out property <string> moon: "M20 15.5A8.5 8.5 0 0 1 8.5 4a8.5 8.5 0 1 0 11.5 11.5z";
+    out property <string> alert: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1 5h2v7h-2zm0 9h2v2h-2z";
+    out property <string> gear: "M10.3 2h3.4l.5 2.6c.6.2 1.2.55 1.7.95l2.5-.9 1.7 2.95-2 1.75c.1.6.1 1.2 0 1.8l2 1.75-1.7 2.95-2.5-.9c-.5.4-1.1.75-1.7.95l-.5 2.6h-3.4l-.5-2.6a6.5 6.5 0 0 1-1.7-.95l-2.5.9-1.7-2.95 2-1.75a5.6 5.6 0 0 1 0-1.8l-2-1.75 1.7-2.95 2.5.9c.5-.4 1.1-.75 1.7-.95zM12 8.75a3.25 3.25 0 1 0 0 6.5 3.25 3.25 0 0 0 0-6.5z";
+    out property <string> bell: "M12 3a6 6 0 0 0-6 6v3.5L4.5 15v1.5h15V15L18 12.5V9a6 6 0 0 0-6-6zM9.8 18.5a2.2 2.2 0 0 0 4.4 0z";
+    out property <string> lyrics: "M4 6h16v2H4zM4 11h12v2H4zM4 16h9v2H4z";
+    out property <string> close: "M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z";
+    // line (stroked)
+    out property <string> shelf: "M3.75 13.5h4.5l1.5 2.25h4.5l1.5-2.25h4.5M3.75 13.5 6 5.25h12l2.25 8.25v5.25H3.75z";
+    out property <string> check: "m5 12.5 4.5 4.5L19 7.5";
+    out property <string> drop-arrow: "M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.25h14";
+    out property <string> file: "M6 2.75h7.5L18.25 7.5v13.75H6zM13.5 2.75V7.5h4.75";
+}
+
+// ---------------- Islo brand (Mochi) ----------------
+// Paths copied from the Islo design system's Logos group (64-unit artboard).
+
+/// Full mark, with the notch shoulders. 24px and up.
+/// Light grounds: black head, pet-yellow eyes (islo-mark).
+/// Dark grounds: white head, black eyes (islo-mark-inverse).
+export component BrandMark inherits Rectangle {
+    in property <bool> on-dark: false;
+    width: 32px;
+    height: 32px;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 64;
+        viewbox-height: 64;
+        fill: root.on-dark ? #ffffff : #000000;
+        commands: "M6 24H16.6L21.2 11.6Q22 9.6 23.4 11.2L30 20.2Q32 22 34 20.2L40.6 11.2Q42 9.6 42.8 11.6L47.4 24H58A6 6 0 0 0 52 30V37A14 14 0 0 1 38 51H26A14 14 0 0 1 12 37V30A6 6 0 0 0 6 24Z";
+    }
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 64;
+        viewbox-height: 64;
+        fill: root.on-dark ? #000000 : #d3b63b;
+        commands: "M21.6 37.5a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0-6.8 0zM35.6 37.5a3.4 3.4 0 1 0 6.8 0a3.4 3.4 0 1 0-6.8 0z";
+    }
+}
+
+/// Mochi, the Islo mascot and pet: the brand's small drawing (chunkier ears,
+/// bigger eyes, no shoulders). Colors come from a skin so they can be customized.
+/// `orient`: 0 upright, 1 upside down (hanging below an edge), 2 ears to the left,
+/// 3 ears to the right (peeking around a side). `look-x/y` (-1..1) move the eyes.
+export component Mochi inherits Rectangle {
+    in property <brush> head: #000000;
+    in property <brush> eyes: #d3b63b;
+    in property <bool> awake: true;
+    in property <float> look-x: 0;
+    in property <float> look-y: 0;
+    in property <float> blink: 0; // 0 open .. 1 shut
+    in property <int> orient: 0;
+    width: 20px;
+    height: 20px;
+    // px per drawing unit (the artboard is 56 units, starting at 4)
+    property <length> u: self.width / 56;
+    property <length> er: 4.6 * u;              // eye radius
+    property <length> reach: 3.4 * u;           // how far the eyes can look
+    // eye centers per orientation, in drawing units
+    property <float> e1x: orient == 0 || orient == 1 ? 24.5 : orient == 2 ? 37 : 27;
+    property <float> e1y: orient == 0 ? 37 : orient == 1 ? 27 : orient == 2 ? 39.5 : 24.5;
+    property <float> e2x: orient == 0 || orient == 1 ? 39.5 : orient == 2 ? 37 : 27;
+    property <float> e2y: orient == 0 ? 37 : orient == 1 ? 27 : orient == 2 ? 24.5 : 39.5;
+    property <length> lx: clamp(look-x, -1, 1) * reach;
+    property <length> ly: clamp(look-y, -1, 1) * reach;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 4;
+        viewbox-y: 4;
+        viewbox-width: 56;
+        viewbox-height: 56;
+        fill: root.head;
+        commands: root.orient == 1 ? "M10 40L15 40L20 54Q21.5 56.5 23 54L28.5 45L35.5 45L41 54Q42.5 56.5 44 54L49 40L54 40L54 28A15 15 0 0 0 39 13L25 13A15 15 0 0 0 10 28Z"
+            : root.orient == 2 ? "M24 54L24 49L10 44Q7.5 42.5 10 41L19 35.5L19 28.5L10 23Q7.5 21.5 10 20L24 15L24 10L36 10A15 15 0 0 1 51 25L51 39A15 15 0 0 1 36 54Z"
+            : root.orient == 3 ? "M40 10L40 15L54 20Q56.5 21.5 54 23L45 28.5L45 35.5L54 41Q56.5 42.5 54 44L40 49L40 54L28 54A15 15 0 0 1 13 39L13 25A15 15 0 0 1 28 10Z"
+            : "M10 24L15 24L20 10Q21.5 7.5 23 10L28.5 19L35.5 19L41 10Q42.5 7.5 44 10L49 24L54 24L54 36A15 15 0 0 1 39 51L25 51A15 15 0 0 1 10 36Z";
+    }
+    // Eyes: open circles that follow the pointer; asleep they become soft lids.
+    property <length> eh: root.awake ? max(1.2px, 2 * er * (1 - 0.85 * clamp(blink, 0, 1))) : max(1.2px, er * 0.42);
+    Rectangle {
+        x: (root.e1x - 4) * u - er + (root.awake ? lx : 0);
+        y: (root.e1y - 4) * u - eh / 2 + (root.awake ? ly : er * 0.3);
+        width: 2 * er;
+        height: eh;
+        border-radius: min(er, eh / 2);
+        background: root.eyes;
+    }
+    Rectangle {
+        x: (root.e2x - 4) * u - er + (root.awake ? lx : 0);
+        y: (root.e2y - 4) * u - eh / 2 + (root.awake ? ly : er * 0.3);
+        width: 2 * er;
+        height: eh;
+        border-radius: min(er, eh / 2);
+        background: root.eyes;
+    }
+}

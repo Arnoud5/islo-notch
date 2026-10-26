@@ -1,0 +1,10 @@
+/target
+/dist
+/islo.ini
+
+# Built binaries and release archives (attach to GitHub Releases instead)
+*.exe
+*.zip
+
+# Local runtime output
+islo-crash.log
