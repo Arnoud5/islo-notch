@@ -9,6 +9,16 @@ use windows::core::{PCWSTR, w};
 /// download CDN) are followed by WinHTTP. Returns the body on status 200, or
 /// None on any error or when the body grows past `max` bytes.
 pub fn get(host: &str, path: &str, max: usize) -> Option<Vec<u8>> {
+    request(w!("GET"), host, path, max).map(|(body, _)| body)
+}
+
+/// HEAD `https://{host}{path}` and return the URL it ends at after redirects
+/// (status 200 only). Cheap: no body is downloaded.
+pub fn final_url(host: &str, path: &str) -> Option<String> {
+    request(w!("HEAD"), host, path, 0).map(|(_, url)| url)
+}
+
+fn request(method: PCWSTR, host: &str, path: &str, max: usize) -> Option<(Vec<u8>, String)> {
     let agent = crate::system::wide(&format!("Islo/{} (Dynamic Island for Windows)", env!("CARGO_PKG_VERSION")));
     let host = crate::system::wide(host);
     let path = crate::system::wide(path);
@@ -22,7 +32,7 @@ pub fn get(host: &str, path: &str, max: usize) -> Option<Vec<u8>> {
             if connect.is_null() {
                 return None;
             }
-            let req = WinHttpOpenRequest(connect, w!("GET"), PCWSTR(path.as_ptr()), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE);
+            let req = WinHttpOpenRequest(connect, method, PCWSTR(path.as_ptr()), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE);
             let out = (|| {
                 if req.is_null() {
                     return None;
@@ -43,6 +53,13 @@ pub fn get(host: &str, path: &str, max: usize) -> Option<Vec<u8>> {
                 if code != 200 {
                     return None;
                 }
+                // where the redirects ended up (in bytes, UTF-16)
+                let mut url = vec![0u16; 2048];
+                let mut len = (url.len() * 2) as u32;
+                let url = match WinHttpQueryOption(req, WINHTTP_OPTION_URL, Some(url.as_mut_ptr() as _), &mut len) {
+                    Ok(()) => String::from_utf16_lossy(&url[..len as usize / 2]),
+                    Err(_) => String::new(),
+                };
                 let mut body = Vec::new();
                 loop {
                     let mut avail = 0u32;
@@ -58,7 +75,7 @@ pub fn get(host: &str, path: &str, max: usize) -> Option<Vec<u8>> {
                         return None;
                     }
                 }
-                Some(body)
+                Some((body, url))
             })();
             if !req.is_null() {
                 let _ = WinHttpCloseHandle(req);

@@ -1,7 +1,8 @@
 //! Updates from GitHub Releases.
 //!
 //! Checking: one HTTPS request to the GitHub API for the latest release, on a
-//! worker thread. Its tag (like "v0.3.8") is compared with this build's version.
+//! worker thread (or the release page, when the API's hourly limit is used up).
+//! Its tag (like "v0.3.8") is compared with this build's version.
 //!
 //! Installing: the release's `Islo.exe` asset is downloaded next to the running
 //! exe, then swapped in. Windows won't let a running exe be overwritten or
@@ -58,9 +59,18 @@ pub fn check(cb: impl FnOnce(Result<Option<Release>, String>) + Send + 'static) 
 }
 
 fn latest() -> Result<Option<Release>, String> {
-    let body = crate::http::get_text("api.github.com", &format!("/repos/{REPO}/releases/latest"), 1_000_000)
-        .ok_or_else(|| "Couldn't reach GitHub. Check your connection and try again.".to_string())?;
-    let tag = crate::http::json_string(&body, "tag_name").ok_or_else(|| "No release found.".to_string())?;
+    // The API gives the notes too, but allows only 60 requests an hour per
+    // internet connection (shared by everyone behind it). When it says no, the
+    // release page still names the tag: /releases/latest redirects to /releases/tag/v0.3.9.
+    let body = crate::http::get_text("api.github.com", &format!("/repos/{REPO}/releases/latest"), 1_000_000).unwrap_or_default();
+    let tag = match crate::http::json_string(&body, "tag_name") {
+        Some(tag) => tag,
+        None => crate::http::final_url("github.com", &format!("/{REPO}/releases/latest"))
+            .ok_or_else(|| "Couldn't reach GitHub. Check your connection and try again.".to_string())?
+            .rsplit_once("/releases/tag/")
+            .map(|(_, tag)| tag.to_string())
+            .ok_or_else(|| "No release found.".to_string())?,
+    };
     let Some(theirs) = parse_version(&tag) else {
         return Err(format!("Release \"{tag}\" isn't a version number."));
     };
@@ -143,4 +153,15 @@ pub fn clean_up_old() {
 
 pub fn releases_page() -> String {
     format!("https://github.com/{REPO}/releases/latest")
+}
+
+#[cfg(test)]
+mod tests {
+    /// Needs the internet: `cargo test -- --ignored`
+    #[test]
+    #[ignore]
+    fn release_page_names_the_tag() {
+        let url = crate::http::final_url("github.com", &format!("/{}/releases/latest", super::REPO)).unwrap();
+        assert!(url.contains("/releases/tag/v"), "{url}");
+    }
 }
