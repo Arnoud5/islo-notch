@@ -26,8 +26,12 @@ Settings are saved in `islo.ini` next to the exe, so nothing is written to C:.
 
 - **Media:** album art, title and a waveform. When opened you get "Artist · App",
   a progress bar and prev / play / next controls.
-- **Synced lyrics** from LRCLIB (free, no account). At rest it shows 1–10 lines
-  (Settings → Modules). Hover to see the whole song scrolling with the music.
+- **Synced lyrics** from LRCLIB (free, no account), for any player: titles like
+  "Artist - Song (Official Video)" from browsers and video sites are cleaned up
+  before the lookup. At rest it shows 1–10 lines (Settings → Modules). Hover to
+  see the whole song scrolling with the music. A lyrics mark in the pill and a
+  chip in the player show whether the song has lyrics (synced, plain, none,
+  instrumental, offline).
 - **HUDs:** volume and brightness pills (brightness only on built-in laptop screens).
 - **Battery:** the pill widens once and shows "Charging" when you plug in, and a
   red "Battery low" warning at 20 / 10 / 5 %. The charging panel shows the time
@@ -38,8 +42,10 @@ Settings are saved in `islo.ini` next to the exe, so nothing is written to C:.
 - **Focus:** an indigo moon while Windows Focus is on.
 - **File shelf:** a dashed drop zone, file tiles with sizes, "Kept · 1 file".
 - **Mochi the pet:** naps in the island and is awake only while you look at it.
-  Feed it, and send it to visit a friend's PC nearby over Bluetooth (no pairing,
-  no account).
+  Now and then it peeks out or walks all the way around the island (also while
+  music plays). Pick its look, size, what it does and how often in
+  Settings → Modules → Pet. Feed it, and send it to visit a friend's PC nearby
+  over Bluetooth (no pairing, no account).
 - **Notifications and calls** (after the one-time setup below). New
   notifications show briefly, then wait as a blue count. Calls arriving as
   notifications (Teams, WhatsApp, Phone Link, Zoom) show in green.
@@ -131,9 +137,18 @@ res/                  app icon + exe manifest, pre-compiled (no resource compile
    ```powershell
    .\rustup-init.exe --default-host x86_64-pc-windows-gnu --default-toolchain stable -y
    ```
-   The GNU toolchain ships its own linker, so you don't need the multi-GB Visual
-   Studio Build Tools, which install mostly to C:.
-3. Build and run:
+   The GNU toolchain avoids the multi-GB Visual Studio Build Tools, which install
+   mostly to C:.
+3. Add a full MinGW-w64. Rust's GNU toolchain ships only part of it, and the
+   `windows` crate needs `dlltool` plus its assembler. Download the WinLibs zip
+   from https://winlibs.com (GCC, **UCRT** runtime, **Win64**, *without LLVM*,
+   Zip archive), extract it so you have `D:\dev\mingw64\bin\gcc.exe`, and put
+   that folder on your PATH:
+   ```powershell
+   [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';D:\dev\mingw64\bin', 'User')
+   ```
+   Close and reopen PowerShell. `dlltool --version` should print a version.
+4. Build and run:
    ```powershell
    cd D:\Werks\projects\Islo
    cargo run --release
@@ -141,7 +156,37 @@ res/                  app icon + exe manifest, pre-compiled (no resource compile
    The result is `target\release\islo.exe`. Tip: `cargo check` is the fastest way
    to see compiler errors while editing.
 
+## Developing (rebuild on save)
+
+- **Rust and UI changes:** run `.\dev.ps1`. It rebuilds when you save a file in
+  `src\` or `ui\` and restarts Islo (about 15 s per save). A failed build keeps
+  the running Islo up. Ctrl+C stops the loop and quits Islo. The dev Islo runs
+  from `target\dev\` with its own `islo.ini`, and it replaces any Islo that is
+  already running.
+- **UI only, instantly:** open a `.slint` file in VS Code with the Slint
+  extension and click "Show Preview" above a component. It redraws as you type.
+  Set properties such as `compact-kind` or `lyric-state` in its side panel to see
+  each state. Rust-driven behaviour (springs, media, Mochi's walks) only runs in
+  the real app.
+- Dev builds are unoptimized and use more CPU. Check performance with
+  `cargo run --release`.
+- `islo.exe --quit` asks a running Islo to quit cleanly.
+
 ## Publishing an update
+
+**Automatic (GitHub Actions):** bump `version` in `Cargo.toml` (for example
+`0.3.8` → `0.3.9`), commit and push, then push a matching tag:
+```powershell
+git tag v0.3.9
+git push origin v0.3.9
+```
+`.github/workflows/release.yml` builds Islo on GitHub, creates the release with
+both files, and uses the commit messages since the last tag as release notes
+(edit them on GitHub afterwards if you like; the first lines show in Settings).
+A tag that doesn't match the `Cargo.toml` version fails without publishing. To
+try the build without releasing: **Actions → Release → Run workflow**.
+
+**By hand:**
 
 1. Bump `version` in `Cargo.toml` (for example `0.3.8` → `0.3.9`).
 2. Build and package:

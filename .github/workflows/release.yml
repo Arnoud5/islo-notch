@@ -1,0 +1,75 @@
+# Publish a release when a version tag is pushed:
+#
+#   1. Bump `version` in Cargo.toml (for example 0.3.8 -> 0.3.9), commit, push.
+#   2. git tag v0.3.9
+#      git push origin v0.3.9
+#
+# GitHub then builds Islo on Windows (release.ps1), creates the release
+# "Islo 0.3.9" with Islo.exe (what the in-app updater downloads) and the zip
+# for new users, and lists the commits since the last tag as release notes.
+# Every Islo 0.3.8 or newer picks it up within a day.
+#
+# Dry run: Actions -> Release -> "Run workflow" builds without publishing
+# anything; the files are attached to that run as "islo-dist".
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload its files
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # all tags, for the release notes
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$version") {
+            throw "Tag ${{ github.ref_name }} doesn't match version $version in Cargo.toml. Bump the version, or tag v$version."
+          }
+          "VERSION=$version" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: ./release.ps1
+
+      - name: Keep the files on this run (dry runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: islo-dist
+          path: dist/
+
+      - name: Release notes (commits since the last tag)
+        if: github.ref_type == 'tag'
+        run: |
+          $prev = git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>$null
+          $range = if ($prev) { "$prev..${{ github.ref_name }}" } else { "${{ github.ref_name }}" }
+          $notes = git log $range --no-merges --pretty="- %s"
+          if (-not $notes) { $notes = "Islo $env:VERSION" }
+          $notes | Out-File notes.md -Encoding utf8
+          $global:LASTEXITCODE = 0
+
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/Islo.exe "dist/Islo-$env:VERSION.zip" `
+            --title "Islo $env:VERSION" --notes-file notes.md --verify-tag

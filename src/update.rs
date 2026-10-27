@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 /// The GitHub repository releases come from ("owner/name"). It must be public.
-pub const REPO: &str = "frumentius44/Islo";
+pub const REPO: &str = "danes44/islo-notch";
 /// The release asset the updater downloads. Attach a file with exactly this name.
 const ASSET: &str = "Islo.exe";
 /// Islo.exe is ~10 MB; anything far bigger isn't ours.

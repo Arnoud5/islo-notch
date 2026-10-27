@@ -2,7 +2,7 @@
 // Built from the Islo design system: monochrome controls, feature color only on
 // feature glyphs, "Saved" confirmation per row, calm motion (no bounce).
 
-import { Icon, LineIcon, Icons, BrandMark } from "icons.slint";
+import { Icon, LineIcon, Icons, BrandMark, Mochi } from "icons.slint";
 
 export global S {
     in property <bool> dark: true;
@@ -198,6 +198,51 @@ component TextField inherits Rectangle {
     }
 }
 
+struct Skin {
+    name: string,
+    head: color,
+    eyes: color,
+}
+
+/// Mochi's looks, as small tiles. Order must match pet::SKINS.
+component SkinPicker inherits HorizontalLayout {
+    in-out property <int> current;
+    callback selected(int);
+    property <[Skin]> skins: [
+        { name: "Classic", head: #000000, eyes: #d3b63b },
+        { name: "Snow", head: #f5f5f5, eyes: #000000 },
+        { name: "Rose", head: #fc90bc, eyes: #000000 },
+        { name: "Mint", head: #6fd087, eyes: #000000 },
+        { name: "Sky", head: #71bfff, eyes: #000000 },
+        { name: "Ember", head: #f99f55, eyes: #000000 },
+    ];
+    spacing: 6px;
+    for skin[i] in root.skins : Rectangle {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        border-width: root.current == i ? 2px : 1px;
+        border-color: root.current == i ? S.primary : S.border;
+        // mid grey so both the black and the white heads read
+        background: skin-ta.has-hover ? #8a8a8a : #7a7a7a;
+        animate background { duration: S.instant; }
+        Mochi {
+            x: 6px;
+            y: 6px;
+            width: 24px;
+            height: 24px;
+            head: skin.head;
+            eyes: skin.eyes;
+        }
+        skin-ta := TouchArea {
+            clicked => {
+                root.current = i;
+                root.selected(i);
+            }
+        }
+    }
+}
+
 component Badge inherits Rectangle {
     in property <string> text: "New";
     height: 20px;
@@ -386,6 +431,10 @@ export component SettingsWindow inherits Window {
     in-out property <bool> pet-peek: true;
     in-out property <bool> pet-track: true;
     in-out property <string> pet-name: "Mochi";
+    in-out property <int> pet-skin: 0;
+    in-out property <int> pet-size: 1;  // 0 small, 1 medium, 2 large
+    in-out property <int> pet-moves: 2; // 0 peek, 1 walk around, 2 both
+    in-out property <int> pet-often: 1; // 0 rarely, 1 sometimes, 2 often
     in-out property <bool> hide-fullscreen: true;
     in-out property <bool> saver-pause: true;
     // ---- general ----
@@ -663,7 +712,8 @@ export component SettingsWindow inherits Window {
                             glyph-color: S.rose;
                             name: "Lyrics";
                             new-badge: true;
-                            desc: "Show synced lyrics in the island while a song plays, when they can be found.";
+                            min-h: 64px;
+                            desc: "Synced lyrics from any player (Spotify, browsers, YouTube, desktop apps). A small lyrics mark shows whether the song has them.";
                             saved: root.saved-key == "lyrics";
                             Toggle { y: 18px; checked <=> root.mod-lyrics; toggled => { root.changed("lyrics"); } }
                         }
@@ -766,11 +816,56 @@ export component SettingsWindow inherits Window {
                             TextField { y: 12px; text <=> root.pet-name; edited => { root.changed("petname"); } }
                         }
                         Row {
-                            name: "Peek around the island";
+                            name: "Look";
                             min-h: 64px;
-                            desc: root.reduce-motion || root.system-reduce-motion ? "Off while Reduce animations is on." : "Now and then, while the island is quiet, Mochi peeks out from under it or around a side. Click Mochi and it hides.";
+                            desc: "Mochi's colors, in the island and when it comes out.";
+                            saved: root.saved-key == "skin";
+                            SkinPicker {
+                                y: 10px;
+                                current <=> root.pet-skin;
+                                selected => { root.changed("skin"); }
+                            }
+                        }
+                        Row {
+                            name: "Size";
+                            desc: "How big Mochi is when it comes out of the island.";
+                            saved: root.saved-key == "petsize";
+                            Segmented {
+                                y: 12px;
+                                options: ["Small", "Medium", "Large"];
+                                current <=> root.pet-size;
+                                selected => { root.changed("petsize"); }
+                            }
+                        }
+                        Row {
+                            name: "Come out of the island";
+                            min-h: 78px;
+                            desc: root.reduce-motion || root.system-reduce-motion ? "Off while Reduce animations is on." : "Now and then, unless you're hovering or something urgent is showing, Mochi peeks out or walks around the island, music playing or not. Click Mochi and it hides.";
                             saved: root.saved-key == "peek";
                             Toggle { y: 18px; checked <=> root.pet-peek; toggled => { root.changed("peek"); } }
+                        }
+                        Row {
+                            name: "What Mochi does";
+                            desc: root.pet-peek ? "Peek from under or beside the island, walk all the way around it, or a mix." : "Turn on Come out of the island to change this.";
+                            saved: root.saved-key == "moves";
+                            Segmented {
+                                y: 12px;
+                                options: ["Peek", "Walk around", "Both"];
+                                current <=> root.pet-moves;
+                                selected => { root.changed("moves"); }
+                            }
+                        }
+                        Row {
+                            name: "How often";
+                            desc: "Rarely: every minute or so. Sometimes: every 15 to 35 seconds. Often: every few seconds.";
+                            min-h: 64px;
+                            saved: root.saved-key == "often";
+                            Segmented {
+                                y: 12px;
+                                options: ["Rarely", "Sometimes", "Often"];
+                                current <=> root.pet-often;
+                                selected => { root.changed("often"); }
+                            }
                         }
                         Row {
                             name: "Eyes follow the pointer";

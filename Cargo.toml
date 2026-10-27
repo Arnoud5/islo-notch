@@ -74,6 +74,12 @@ debug = false
 [profile.dev]
 opt-level = 1
 
+# Islo's own code (and the Rust that Slint generates from ui\*.slint) builds
+# unoptimized in dev, so dev.ps1 rebuilds fast; libraries stay optimized.
+[profile.dev.package.islo]
+opt-level = 0
+debug = "line-tables-only"
+
 [target.'cfg(not(windows))'.dependencies]
 # Only used by the UI snapshot tool on Linux/macOS (renders states to PNG for review).
 png = "0.17"

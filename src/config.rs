@@ -67,7 +67,10 @@ pub struct Config {
     pub pet_nearby: bool,
     pub pet_peek: bool,  // peek around the island while it's quiet
     pub pet_track: bool, // eyes follow the pointer
-    pub pet_skin: i32,   // 0 = Classic (black head, yellow eyes); more skins later
+    pub pet_skin: i32,   // index into pet::SKINS (0 = Classic: black head, yellow eyes)
+    pub pet_size: i32,   // peeking Mochi: 0 small, 1 medium, 2 large
+    pub pet_moves: i32,  // 0 peek, 1 walk around the island, 2 both
+    pub pet_often: i32,  // 0 rarely, 1 sometimes, 2 often
     pub pet_id: u32,  // 24-bit random id used in Bluetooth beacons
     pub pet_fed: u64, // unix seconds, 0 = never
     // full screen & power
@@ -110,6 +113,9 @@ impl Default for Config {
             pet_peek: true,
             pet_track: true,
             pet_skin: 0,
+            pet_size: 1,
+            pet_moves: 2,
+            pet_often: 1,
             pet_id: 0,
             pet_fed: 0,
             hide_fullscreen: true,
@@ -178,7 +184,10 @@ impl Config {
                 "pet_nearby" => c.pet_nearby = b,
                 "pet_peek" => c.pet_peek = b,
                 "pet_track" => c.pet_track = b,
-                "pet_skin" => c.pet_skin = i(0).max(0),
+                "pet_skin" => c.pet_skin = i(0).clamp(0, crate::pet::SKINS.len() as i32 - 1),
+                "pet_size" => c.pet_size = i(1).clamp(0, 2),
+                "pet_moves" => c.pet_moves = i(2).clamp(0, 2),
+                "pet_often" => c.pet_often = i(1).clamp(0, 2),
                 "pet_id" => c.pet_id = v.parse().unwrap_or(0) & 0xff_ffff,
                 "pet_fed" => c.pet_fed = v.parse().unwrap_or(0),
                 "hide_fullscreen" => c.hide_fullscreen = b,
@@ -211,7 +220,7 @@ impl Config {
              width={}\nedge={}\nedge_pos={:.3}\nside_style={}\nhover_expand={}\nhover_delay={}\ntheme={}\n\
              reduce_motion={}\nshow_on={}\nmonitor={}\npill_glance={}\nheader_date={}\nfeatured={}\n\
              media={}\nlyrics={}\nlyric_lines={}\nhud={}\nhide_flyout={}\nbattery={}\nshelf={}\nnotifications={}\n\
-             timer={}\nprivacy={}\nfocus={}\npet={}\npet_name={}\npet_nearby={}\npet_peek={}\npet_track={}\npet_skin={}\npet_id={}\npet_fed={}\nhide_fullscreen={}\nsaver_pause={}\nupdate_check={}\n",
+             timer={}\nprivacy={}\nfocus={}\npet={}\npet_name={}\npet_nearby={}\npet_peek={}\npet_track={}\npet_skin={}\npet_size={}\npet_moves={}\npet_often={}\npet_id={}\npet_fed={}\nhide_fullscreen={}\nsaver_pause={}\nupdate_check={}\n",
             self.width.round(),
             self.edge.index(),
             self.edge_pos,
@@ -242,6 +251,9 @@ impl Config {
             b(self.pet_peek),
             b(self.pet_track),
             self.pet_skin,
+            self.pet_size,
+            self.pet_moves,
+            self.pet_often,
             self.pet_id,
             self.pet_fed,
             b(self.hide_fullscreen),

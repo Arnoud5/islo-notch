@@ -184,6 +184,23 @@ fn run(id: [u8; 3], rx: Receiver<Cmd>, cb: std::sync::Arc<dyn Fn(Event) + Send +
     }
 }
 
+/// Mochi's looks: (name, head, eyes, head on the black island).
+/// Must match `skins` in settings.slint (same order).
+pub const SKINS: [(&str, u32, u32, u32); 6] = [
+    ("Classic", 0x000000, 0xd3b63b, 0x161616),
+    ("Snow", 0xf5f5f5, 0x000000, 0xf5f5f5),
+    ("Rose", 0xfc90bc, 0x000000, 0xfc90bc),
+    ("Mint", 0x6fd087, 0x000000, 0x6fd087),
+    ("Sky", 0x71bfff, 0x000000, 0x71bfff),
+    ("Ember", 0xf99f55, 0x000000, 0xf99f55),
+];
+
+/// Size of the peeking / wandering Mochi (logical px) for small, medium, large.
+pub const SIZES: [f32; 3] = [26.0, 34.0, 44.0];
+
+/// Wait between appearances (ms) for rarely, sometimes, often.
+pub const OFTEN: [(u64, u64); 3] = [(45_000, 90_000), (15_000, 35_000), (5_000, 12_000)];
+
 /// First name of the signed-in Windows user ("Frumentius Daneswara" -> "Frumentius").
 pub fn owner_name() -> String {
     use windows::Win32::Security::Authentication::Identity::{GetUserNameExW, NameDisplay};

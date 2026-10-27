@@ -47,8 +47,16 @@ fn main() {
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
     install_crash_log();
+    // `islo.exe --quit`: ask the running Islo to quit cleanly (dev.ps1 uses it)
+    if std::env::args().any(|a| a == "--quit") {
+        system::close_running(false);
+        return;
+    }
     let after_update = std::env::args().any(|a| a == update::AFTER_UPDATE_ARG);
-    if !system::single_instance(after_update) {
+    // Dev builds (`cargo run`, dev.ps1) replace a running Islo instead of
+    // quitting, so every rebuild restarts it. Release builds never do this.
+    let replace = cfg!(debug_assertions) && system::close_running(true);
+    if !system::single_instance(after_update || replace) {
         return; // Islo is already running
     }
     update::clean_up_old();

@@ -376,6 +376,38 @@ pub fn memory_mb() -> (f64, f64) {
     (c.WorkingSetSize as f64 / 1048576.0, c.PrivateUsage as f64 / 1048576.0)
 }
 
+/// The message a running Islo quits on. Registered (not WM_CLOSE), so older
+/// Islo builds just ignore it instead of losing their host window.
+pub fn quit_msg() -> u32 {
+    unsafe { RegisterWindowMessageW(w!("Islo.Quit")) }
+}
+
+/// Ask a running Islo to quit cleanly (tray icon removed, Windows' volume
+/// flyout restored). With `force`, an Islo that hasn't quit after 3 s (an
+/// older build that doesn't know the message) is ended. False when no other
+/// Islo is running.
+pub fn close_running(force: bool) -> bool {
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject};
+    unsafe {
+        let h = match FindWindowW(w!("IsloHost"), w!("IsloHost")) {
+            Ok(h) if !h.is_invalid() => h,
+            _ => return false,
+        };
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, Some(&mut pid));
+        let _ = PostMessageW(Some(h), quit_msg(), WPARAM(0), LPARAM(0));
+        if force && pid != 0 {
+            if let Ok(p) = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) {
+                if WaitForSingleObject(p, 3000) == WAIT_TIMEOUT {
+                    let _ = TerminateProcess(p, 0);
+                }
+                let _ = CloseHandle(p);
+            }
+        }
+        true
+    }
+}
+
 /// True if this is the only Islo running. With `wait` (right after an update),
 /// give the previous Islo up to 10 s to exit first.
 pub fn single_instance(wait: bool) -> bool {

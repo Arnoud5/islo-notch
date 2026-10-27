@@ -217,6 +217,13 @@ struct App {
     osd_hidden: bool,
 
     lyrics: lyrics::Lines,
+    /// Timed lines (false: plain lyrics, shown whole without following the song).
+    lyrics_synced: bool,
+    /// What the lookup found for this song (L_* below).
+    lyric_state: i32,
+    /// Players that report no timeline: our own clock for the song
+    /// (seconds played before `since`, and since when it's been playing).
+    clock: (f64, Option<Instant>),
     lyrics_key: String,
     lyric_idx: usize,
     lyrics_model: Rc<VecModel<slint::SharedString>>,
@@ -287,6 +294,15 @@ const U_INSTALLING: i32 = 3;
 const U_CURRENT: i32 = 4;
 const U_ERROR: i32 = 5;
 
+// lyric states (must match `lyric-state` in island.slint)
+const L_HIDDEN: i32 = 0;
+const L_SEARCHING: i32 = 1;
+const L_SYNCED: i32 = 2;
+const L_PLAIN: i32 = 3;
+const L_MISSING: i32 = 4;
+const L_INSTRUMENTAL: i32 = 5;
+const L_OFFLINE: i32 = 6;
+
 impl App {
     fn reduce_motion(&self) -> bool {
         self.cfg.reduce_motion || !self.sys_anim
@@ -296,8 +312,14 @@ impl App {
         self.cfg.media && self.media.is_some()
     }
 
+    /// Lyrics to show for this song (synced or plain).
     fn lyrics_on(&self) -> bool {
         self.cfg.lyrics && self.media_visible() && !self.lyrics.is_empty()
+    }
+
+    /// Timed lyrics that follow the song (the compact lyric views need these).
+    fn synced_on(&self) -> bool {
+        self.lyrics_on() && self.lyrics_synced
     }
 
     fn playing(&self) -> bool {
@@ -362,7 +384,7 @@ impl App {
         }
         // (unread notifications don't take over the pill: they show as a bell badge)
         if self.media_visible() {
-            return if self.lyrics_on() && self.cfg.lyric_lines >= 2 { C_LYRICS } else { C_MEDIA };
+            return if self.synced_on() && self.cfg.lyric_lines >= 2 { C_LYRICS } else { C_MEDIA };
         }
         if self.low_battery(10) {
             return C_LOW;
@@ -571,7 +593,8 @@ impl App {
             && v.shown && !v.expanded && !v.hovering && !v.dragging && !v.drag_over && !v.pressed
             && self.mode(v) == 0 && !self.tab(v)
             && matches!(self.edge_of(v), 0 | 1 | 4)
-            && matches!(self.compact_kind(v), C_GLANCE | C_PET | C_IDLE)
+            // anything calm, music included; not over calls, drops or alerts
+            && matches!(self.compact_kind(v), C_GLANCE | C_PET | C_IDLE | C_MEDIA | C_LYRICS | C_SHELF | C_FOCUS | C_TIMER)
     }
 
     /// Keep the peek schedule in step with what the island is doing.
@@ -586,7 +609,8 @@ impl App {
         if !any {
             self.peek_timer.stop();
         } else if !self.peek_timer.running() {
-            let ms = self.rand_range(18_000, 45_000);
+            let (lo, hi) = pet::OFTEN[self.cfg.pet_often.clamp(0, 2) as usize];
+            let ms = self.rand_range(lo, hi);
             self.peek_timer.start(TimerMode::SingleShot, Duration::from_millis(ms), || {
                 with_app(|a| a.start_peek());
             });
@@ -599,26 +623,112 @@ impl App {
             return;
         }
         let i = ok[self.rand() as usize % ok.len()];
-        let edge = self.edge_of(&self.views[i]);
-        // below the pill is the classic peek; sides now and then
-        let sides: &[i32] = match edge {
-            1 => &[4, 4, 2, 3],
-            4 => &[1, 4, 2, 3],
-            _ => &[1, 1, 2, 3],
+        let walk = match self.cfg.pet_moves {
+            0 => false,
+            1 => true,
+            _ => self.rand() % 2 == 0,
         };
-        let side = sides[self.rand() as usize % sides.len()];
-        let pos = 0.15 + (self.rand() % 700) as f32 / 1000.0;
-        let isl = &self.views[i].island;
-        isl.set_peek_pos(pos);
-        isl.set_peek_side(side);
-        isl.set_peek_out(true);
         self.peek = Some(i);
+        if walk {
+            let from_left = self.rand() % 2 == 0;
+            self.walk_step(i, from_left, 0);
+        } else {
+            let edge = self.edge_of(&self.views[i]);
+            // below the pill is the classic peek; sides now and then
+            let sides: &[i32] = match edge {
+                1 => &[4, 4, 2, 3],
+                4 => &[1, 4, 2, 3],
+                _ => &[1, 1, 2, 3],
+            };
+            let side = sides[self.rand() as usize % sides.len()];
+            let pos = 0.15 + (self.rand() % 700) as f32 / 1000.0;
+            let isl = &self.views[i].island;
+            isl.set_peek_glide(0);
+            isl.set_peek_walking(false);
+            isl.set_peek_pos(pos);
+            isl.set_peek_side(side);
+            isl.set_peek_out(true);
+            let stay = self.rand_range(2400, 4200);
+            self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(stay), || {
+                with_app(|a| a.duck_peek());
+            });
+        }
         self.update_pointer_watch();
         self.update_eyes();
         self.update_pet_anim();
-        let stay = self.rand_range(2400, 4200);
-        self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(stay), || {
-            with_app(|a| a.duck_peek());
+    }
+
+    /// Mochi walks around the island: out from one side, round the corner,
+    /// along the free edge (with a pause to look around), round the other
+    /// corner, and back in. Each step is one Slint animation plus one
+    /// single-shot timer, so nothing ticks between steps.
+    fn walk_step(&mut self, i: usize, from_left: bool, step: u32) {
+        if self.peek != Some(i) {
+            return; // ducked meanwhile (poked, hovered, island woke up)
+        }
+        let Some(v) = self.views.get(i) else { return };
+        let edge = self.edge_of(v);
+        // the long free edge: below the pill, or above it on the bottom edge
+        let far = if edge == 1 { 4 } else { 1 };
+        let (start, end) = if from_left { (2, 3) } else { (3, 2) };
+        let (p0, p1) = if from_left { (0.0, 1.0) } else { (1.0, 0.0) };
+        // walking speed: ~45 px/s along the pill
+        let span = (v.w.value - 2.0 * v.r.value - pet::SIZES[self.cfg.pet_size.clamp(0, 2) as usize]).max(20.0);
+        let isl = v.island.clone_strong();
+        let (wait, next) = match step {
+            // pop out of the starting side
+            0 => {
+                isl.set_peek_glide(0);
+                isl.set_peek_walking(false);
+                isl.set_peek_pos(0.5);
+                isl.set_peek_side(start);
+                isl.set_peek_out(true);
+                (900, 1)
+            }
+            // round the corner onto the free edge
+            1 => {
+                isl.set_peek_glide(320);
+                isl.set_peek_side(far);
+                isl.set_peek_pos(p0);
+                (360, 2)
+            }
+            // walk to somewhere in the middle
+            2 => {
+                let mid = 0.35 + (self.rand() % 300) as f32 / 1000.0;
+                let ms = (span * (mid - p0).abs() / 45.0 * 1000.0) as u64;
+                isl.set_peek_walking(true);
+                isl.set_peek_glide(ms as i64);
+                isl.set_peek_pos(mid);
+                (ms, 3)
+            }
+            // stop and look around for a moment
+            3 => {
+                isl.set_peek_walking(false);
+                (self.rand_range(900, 1800), 4)
+            }
+            // on to the far end
+            4 => {
+                let ms = (span * (p1 - isl.get_peek_pos()).abs() / 45.0 * 1000.0) as u64;
+                isl.set_peek_walking(true);
+                isl.set_peek_glide(ms as i64);
+                isl.set_peek_pos(p1);
+                (ms, 5)
+            }
+            // round the last corner
+            5 => {
+                isl.set_peek_walking(false);
+                isl.set_peek_glide(320);
+                isl.set_peek_side(end);
+                isl.set_peek_pos(0.5);
+                (1100, 6)
+            }
+            _ => {
+                self.duck_peek();
+                return;
+            }
+        };
+        self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(wait), move || {
+            with_app(|a| a.walk_step(i, from_left, next));
         });
     }
 
@@ -626,6 +736,7 @@ impl App {
     fn duck_peek(&mut self) {
         let Some(i) = self.peek else { return };
         if let Some(v) = self.views.get(i) {
+            v.island.set_peek_walking(false);
             v.island.set_peek_out(false);
         }
         self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(260), move || {
@@ -717,11 +828,15 @@ impl App {
     /// Panels the header switcher offers.
     fn panels(&self, v: &View) -> Vec<i32> {
         let mut p = Vec::new();
-        if self.lyrics_on() {
+        // synced lyrics lead; plain lyrics sit after the player
+        if self.synced_on() {
             p.push(P_LYRICS);
         }
         if self.cfg.media {
             p.push(P_MEDIA);
+        }
+        if self.lyrics_on() && !self.lyrics_synced {
+            p.push(P_LYRICS);
         }
         if self.cfg.shelf && (!self.shelf.is_empty() || !self.cfg.media) {
             p.push(P_SHELF);
@@ -789,7 +904,7 @@ impl App {
                 }
                 let w = match kind {
                     // one lyric line: stays a pill, widened so lines fit
-                    C_MEDIA if self.lyrics_on() => EXPANDED_W,
+                    C_MEDIA if self.synced_on() => EXPANDED_W,
                     C_MEDIA | C_DROP | C_ERROR => (base + 60.0).clamp(260.0, COMPACT_MAX),
                     C_CHARGING | C_LOW | C_MIC | C_CAMERA | C_FOCUS | C_PET => base.max(220.0),
                     C_NEARBY | C_CALL | C_NOTE_NEW => (base + 60.0).clamp(260.0, COMPACT_MAX),
@@ -1008,7 +1123,7 @@ impl App {
             isl.set_has_timeline(m.info.timeline.is_some());
         }
         isl.set_date_text(self.date_text.clone().into());
-        apply_skin(isl, self.cfg.pet_skin);
+        apply_skin(isl, &self.cfg);
         let b = self.battery;
         isl.set_has_battery(self.cfg.battery && b.present);
         isl.set_battery_level(b.percent as i32);
@@ -1022,6 +1137,7 @@ impl App {
         isl.set_hud_muted(muted);
         self.update_shelf_summary_on(isl);
         isl.set_lyrics(self.lyrics_model.clone().into());
+        isl.set_lyric_state(if self.cfg.lyrics && self.media_visible() { self.lyric_state } else { L_HIDDEN });
         isl.set_mic_app(self.privacy.mic.clone().unwrap_or_default().into());
         isl.set_camera_app(self.privacy.camera.clone().unwrap_or_default().into());
     }
@@ -1307,6 +1423,7 @@ impl App {
 
     fn expand(&mut self, i: usize) {
         let media_visible = self.media_visible();
+        let synced = self.synced_on();
         let tab = self.tab(&self.views[i]);
         let glyphs = self.glyphs();
         let panels = self.panels(&self.views[i]);
@@ -1319,7 +1436,7 @@ impl App {
             // side tab: open the panel of the glyph under the pointer
             let slot = v.glyph_slot.unwrap_or(0);
             v.panel = glyphs.get(slot).map(|g| Self::glyph_panel(*g)).unwrap_or(P_MEDIA);
-            if v.panel == P_MEDIA && panels.contains(&P_LYRICS) {
+            if v.panel == P_MEDIA && synced {
                 v.panel = P_LYRICS;
             }
         } else {
@@ -1329,7 +1446,7 @@ impl App {
             }
             // Open where the action is: the whole song's lyrics when we have
             // them; files waiting and nothing playing -> shelf.
-            if panels.contains(&P_LYRICS) && (v.panel == P_MEDIA || v.panel == P_LYRICS) {
+            if synced && (v.panel == P_MEDIA || v.panel == P_LYRICS) {
                 v.panel = P_LYRICS;
             }
             if !media_visible && panels.contains(&P_SHELF) {
@@ -1831,8 +1948,13 @@ impl App {
     // ---------------- media ----------------
 
     fn on_media(&mut self, info: Option<media::Info>) {
+        let was_playing = self.playing();
         match info {
-            None => self.media = None,
+            None => {
+                self.media = None;
+                self.lyrics_key.clear();
+                self.lyric_state = L_HIDDEN;
+            }
             Some(info) => {
                 if info.art_id != self.art_id {
                     self.art_id = info.art_id;
@@ -1871,12 +1993,24 @@ impl App {
                     album: info.album.clone(),
                     duration: info.timeline.map(|t| t.1).unwrap_or(0.0),
                 };
+                // our own clock for players without a timeline
+                if key != self.lyrics_key {
+                    self.clock = (0.0, playing.then(Instant::now));
+                } else if playing != was_playing {
+                    match self.clock.1.take() {
+                        Some(since) if !playing => self.clock.0 += since.elapsed().as_secs_f64(),
+                        _ if playing => self.clock.1 = Some(Instant::now()),
+                        _ => {}
+                    }
+                }
                 self.media = Some(MediaState { info, received: Instant::now() });
                 self.update_progress();
                 if key != self.lyrics_key {
                     self.lyrics_key = key;
                     self.lyrics.clear();
+                    self.lyrics_synced = false;
                     self.lyrics_model.set_vec(Vec::new());
+                    self.lyric_state = L_SEARCHING;
                     if self.cfg.lyrics {
                         if let Some(tx) = &self.lyrics_tx {
                             let _ = tx.send(req);
@@ -1885,40 +2019,69 @@ impl App {
                 }
             }
         }
+        self.push_lyric_state();
         self.lyrics_sync();
         self.retarget();
     }
 
     // ---------------- lyrics ----------------
 
-    fn on_lyrics(&mut self, key: String, lines: lyrics::Lines) {
+    fn on_lyrics(&mut self, key: String, found: lyrics::Found) {
         if key != self.lyrics_key {
             return; // the song changed while we were fetching
         }
-        self.lyrics_model.set_vec(lines.iter().map(|l| slint::SharedString::from(l.1.as_str())).collect::<Vec<_>>());
-        self.lyrics = lines;
+        self.lyric_state = match () {
+            _ if found.lines.is_empty() && found.offline => L_OFFLINE,
+            _ if found.lines.is_empty() && found.instrumental => L_INSTRUMENTAL,
+            _ if found.lines.is_empty() => L_MISSING,
+            _ if found.synced => L_SYNCED,
+            _ => L_PLAIN,
+        };
+        self.lyrics_model.set_vec(found.lines.iter().map(|l| slint::SharedString::from(l.1.as_str())).collect::<Vec<_>>());
+        self.lyrics = found.lines;
+        self.lyrics_synced = found.synced;
         self.lyric_idx = usize::MAX;
+        self.push_lyric_state();
         self.lyrics_sync();
         self.retarget();
     }
 
-    /// Where the song is right now (seconds), from the last timeline report.
+    /// Tell the islands whether this song has lyrics (shown as a chip and a glyph).
+    fn push_lyric_state(&self) {
+        let state = if self.cfg.lyrics && self.media_visible() { self.lyric_state } else { L_HIDDEN };
+        self.each(|isl| isl.set_lyric_state(state));
+    }
+
+    /// Where the song is right now (seconds): from the player's timeline, or
+    /// our own clock for players that don't report one (or report nonsense).
     fn position_now(&self) -> Option<f64> {
         let m = self.media.as_ref()?;
-        let (pos, dur, age) = m.info.timeline?;
-        let mut t = pos;
-        if m.info.playing {
-            t += age + m.received.elapsed().as_secs_f64();
+        if let Some((pos, dur, age)) = m.info.timeline {
+            if age < dur + 30.0 {
+                let mut t = pos;
+                if m.info.playing {
+                    t += age + m.received.elapsed().as_secs_f64();
+                }
+                return Some(t.clamp(0.0, dur));
+            }
         }
-        Some(t.clamp(0.0, dur))
+        Some(self.clock.0 + self.clock.1.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0))
     }
 
     /// Show the line for "now", then sleep exactly until the next line starts.
     /// (No polling: one single-shot timer per lyric line.)
     fn lyrics_sync(&mut self) {
         let title = self.media.as_ref().map(|m| m.info.title.clone()).unwrap_or_default();
-        if !self.lyrics_on() {
+        if !self.synced_on() {
             self.lyric_timer.stop();
+            if self.lyrics_on() && self.lyric_idx != usize::MAX - 1 {
+                // plain lyrics: the whole text, nothing highlighted, from the top
+                self.lyric_idx = usize::MAX - 1;
+                self.each(|isl| {
+                    isl.set_lyric_index(-1);
+                    isl.set_lyric_scroll(0.0);
+                });
+            }
             self.each(|isl| isl.set_compact_title(title.clone().into()));
             return;
         }
@@ -2291,6 +2454,10 @@ impl App {
         s.set_pet_peek(c.pet_peek);
         s.set_pet_track(c.pet_track);
         s.set_pet_name(c.pet_name.clone().into());
+        s.set_pet_skin(c.pet_skin);
+        s.set_pet_size(c.pet_size);
+        s.set_pet_moves(c.pet_moves);
+        s.set_pet_often(c.pet_often);
         s.set_hide_fullscreen(c.hide_fullscreen);
         s.set_saver_pause(c.saver_pause);
         s.set_autostart(system::autostart_enabled());
@@ -2342,6 +2509,10 @@ impl App {
         c.pet_nearby = s.get_pet_nearby();
         c.pet_peek = s.get_pet_peek();
         c.pet_track = s.get_pet_track();
+        c.pet_skin = s.get_pet_skin().clamp(0, pet::SKINS.len() as i32 - 1);
+        c.pet_size = s.get_pet_size().clamp(0, 2);
+        c.pet_moves = s.get_pet_moves().clamp(0, 2);
+        c.pet_often = s.get_pet_often().clamp(0, 2);
         let name: String = s.get_pet_name().trim().chars().filter(|c| !c.is_control()).take(24).collect();
         if !name.is_empty() {
             c.pet_name = name;
@@ -2376,6 +2547,17 @@ impl App {
         if key == "update_check" {
             self.schedule_update_checks();
         }
+        if matches!(key, "skin" | "petsize") {
+            for v in &self.views {
+                apply_skin(&v.island, &self.cfg);
+            }
+        }
+        if matches!(key, "peek" | "moves" | "often" | "skin" | "petsize") {
+            // show the change: Mochi comes out in a moment (if the island is quiet)
+            self.peek_timer.start(TimerMode::SingleShot, Duration::from_millis(1200), || {
+                with_app(|a| a.start_peek());
+            });
+        }
         if key == "notifications" && self.cfg.notifications && self.notify_state == 2 {
             // show Windows' consent prompt, then start listening
             notify::request_access(|ok| {
@@ -2391,6 +2573,7 @@ impl App {
                 })
             });
         }
+        self.push_lyric_state();
         self.lyrics_sync();
         self.apply_config();
     }
@@ -2648,12 +2831,15 @@ fn quit() {
     let _ = slint::quit_event_loop();
 }
 
-/// Mochi's colors. Skin 0 is the brand mascot; more skins can be added here.
-fn apply_skin(isl: &Island, _skin: i32) {
+/// Mochi's colors and size (skin 0 is the brand mascot; see pet::SKINS).
+fn apply_skin(isl: &Island, cfg: &Config) {
+    let (_, head, eyes, island_head) = pet::SKINS[(cfg.pet_skin.max(0) as usize).min(pet::SKINS.len() - 1)];
+    let rgb = |c: u32| slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8);
     let g = isl.global::<PetSkin>();
-    g.set_head(slint::Color::from_rgb_u8(0x00, 0x00, 0x00));
-    g.set_eyes(slint::Color::from_rgb_u8(0xd3, 0xb6, 0x3b));
-    g.set_island_head(slint::Color::from_rgb_u8(0x16, 0x16, 0x16));
+    g.set_head(rgb(head));
+    g.set_eyes(rgb(eyes));
+    g.set_island_head(rgb(island_head));
+    g.set_size(pet::SIZES[cfg.pet_size.clamp(0, 2) as usize]);
 }
 
 /// Connect one island's UI callbacks to the app (by view index).
@@ -2787,7 +2973,7 @@ impl App {
 
 /// Messages that open modal loops (menus, drag & drop) must run *outside*
 /// `with_app`, because those loops dispatch more messages back into the app.
-fn host_handler(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, taskbar_created: u32) -> Option<LRESULT> {
+fn host_handler(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, taskbar_created: u32, quit_msg: u32) -> Option<LRESULT> {
     match msg {
         system::WM_APP_TRAY => {
             match (lp.0 & 0xffff) as u32 {
@@ -2853,6 +3039,11 @@ fn host_handler(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, taskbar_created: u
             system::tray_add(hwnd);
             Some(LRESULT(0))
         }
+        // asked to quit (`islo.exe --quit`, a dev build taking over, WM_CLOSE)
+        m if m == WM_CLOSE || (m == quit_msg && m != 0) => {
+            quit();
+            Some(LRESULT(0))
+        }
         _ => with_app(|a| a.host_message(msg, wp, lp)).flatten(),
     }
 }
@@ -2896,6 +3087,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
         esc_armed: false,
         osd_hidden: false,
         lyrics: Vec::new(),
+        lyrics_synced: false,
+        lyric_state: L_HIDDEN,
+        clock: (0.0, None),
         lyrics_key: String::new(),
         lyric_idx: usize::MAX,
         lyrics_model: Rc::new(VecModel::default()),
@@ -2953,7 +3147,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
         });
     });
     let taskbar_created = system::taskbar_created_msg();
-    platform::set_host_handler(move |hwnd, msg, wp, lp| host_handler(hwnd, msg, wp, lp, taskbar_created));
+    let quit_msg = system::quit_msg();
+    platform::set_host_handler(move |hwnd, msg, wp, lp| host_handler(hwnd, msg, wp, lp, taskbar_created, quit_msg));
 
     // ---- system services (each sleeps until Windows has news) ----
     let host = platform::host_hwnd();
@@ -2982,7 +3177,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
     });
 
-    let lyrics_tx = lyrics::start(|key, lines| post(move |a| a.on_lyrics(key, lines)));
+    let lyrics_tx = lyrics::start(|key, found| post(move |a| a.on_lyrics(key, found)));
     live::start_privacy(|p| post(move |a| a.on_privacy(p)));
     live::start_focus(|on| post(move |a| a.on_focus(on)));
     system::register_toggle_hotkey(host);

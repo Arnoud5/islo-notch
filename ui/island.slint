@@ -209,6 +209,7 @@ export global PetSkin {
     in-out property <color> head: #000000;        // brand: black head (outside the island)
     in-out property <color> eyes: #d3b63b;        // island-pet yellow
     in-out property <color> island-head: #161616; // the head on the black island, a shade up so it reads
+    in-out property <length> size: 34px;          // the peeking / wandering Mochi
     in-out property <float> look-x: 0;
     in-out property <float> look-y: 0;
     in-out property <float> blink: 0;
@@ -233,6 +234,76 @@ component PetGlyph inherits Rectangle {
         look-x: root.look ? PetSkin.look-x : -0.6;
         look-y: root.look ? PetSkin.look-y : 0.1;
         blink: PetSkin.blink;
+    }
+}
+
+/// Does this song have lyrics? Bright when synced, grey for plain text, faint
+/// while searching, struck through when there are none (states as `lyric-state`).
+component LyricGlyph inherits Rectangle {
+    in property <int> state;
+    in property <color> tint: T.ink;
+    width: 14px;
+    height: 14px;
+    Icon {
+        d: Icons.lyrics;
+        width: parent.width;
+        height: parent.height;
+        fill: root.state == 2 ? root.tint : T.muted;
+        opacity: root.state == 1 ? 0.45 : root.state >= 4 ? 0.55 : 1;
+    }
+    if root.state >= 4 : Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M4 21 L21 4";
+        fill: transparent;
+        stroke: T.bg;
+        stroke-width: 4px;
+    }
+    if root.state >= 4 : Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M4 21 L21 4";
+        fill: transparent;
+        stroke: T.muted;
+        stroke-width: 1.6px;
+    }
+}
+
+/// The lyric state in words; opens the lyrics when there are some.
+component LyricChip inherits Rectangle {
+    in property <int> state;
+    in property <color> tint: T.ink;
+    callback open();
+    property <bool> has: root.state == 2 || root.state == 3;
+    height: 24px;
+    width: row.preferred-width;
+    border-radius: 12px;
+    background: root.has && ta.has-hover ? T.tile-hover : T.tile;
+    animate background { duration: 90ms; }
+    row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 10px;
+        spacing: 5px;
+        Rectangle {
+            width: 14px;
+            LyricGlyph { y: 5px; state: root.state; tint: root.tint; }
+        }
+        Text {
+            text: root.state == 1 ? "Finding…" : root.state == 2 ? "Lyrics" : root.state == 3 ? "Plain lyrics"
+                : root.state == 5 ? "Instrumental" : root.state == 6 ? "Offline" : "No lyrics";
+            color: root.has ? T.ink : T.muted;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.has;
+        clicked => { root.open(); }
     }
 }
 
@@ -339,6 +410,10 @@ export component Island inherits Window {
     in property <int> peek-side: 0;
     in property <float> peek-pos: 0.5;   // where along that edge, 0..1
     in property <bool> peek-out: false;  // sliding out (true) or ducking back (false)
+    // walking around the island: moves between spots glide over this long
+    // (0 = follow at once), and while walking Mochi hops along
+    in property <duration> peek-glide: 0ms;
+    in property <bool> peek-walking: false;
     callback peek-poked();
     in property <length> pet-bob: 0px;
     in property <string> visitor: "";        // a friend's pet staying here
@@ -382,6 +457,9 @@ export component Island inherits Window {
     in property <int> lyric-index: 0;
     in property <[string]> lyric-window: []; // current + next lines for the compact view
     in property <length> lyric-scroll: 0px;
+    // does this song have lyrics: 0 hidden (off / nothing playing), 1 searching,
+    // 2 synced, 3 plain (not timed), 4 none found, 5 instrumental, 6 offline
+    in property <int> lyric-state: 0;
     in property <string> subtitle: "";  // "Artist · App"
     in property <image> art;
     in property <bool> has-art: false;
@@ -479,8 +557,10 @@ export component Island inherits Window {
     // Lives behind the pill: it slides out from under an edge, looks around (eyes
     // follow the pointer) and ducks back. Its black head merges with the island,
     // so it reads as the island growing ears. Poke it and it hides.
+    // Walking around: Rust moves it side -> corner -> along the edge -> corner,
+    // and x/y glide between those spots (linear while walking).
     if root.peek-side != 0 : peek := Rectangle {
-        property <length> size: 34px;
+        property <length> size: PetSkin.size;
         property <float> t: root.peek-out ? 1 : 0;
         animate t { duration: root.reduce-motion ? 0ms : root.peek-out ? 420ms : 220ms; easing: root.peek-out ? ease-out-back : ease-in; }
         property <length> shown: size * 0.72 * t; // how far it's out
@@ -494,7 +574,11 @@ export component Island inherits Window {
         y: root.peek-side == 1 ? pill.y + pill.height - size + shown
             : root.peek-side == 4 ? pill.y - shown
             : pill.y + max(0px, span-y) / 2;
+        animate x, y { duration: root.reduce-motion ? 0ms : root.peek-glide; easing: root.peek-walking ? linear : ease-in-out; }
+        // a little hop with each step (only ticks while walking)
+        property <length> hop: root.peek-walking ? abs(sin(animation-tick() / 1ms * 1deg)) * 2.5px : 0px;
         Mochi {
+            y: root.peek-side == 4 ? peek.hop : -peek.hop; // bobs toward the island
             width: parent.width;
             height: parent.height;
             orient: root.peek-side == 1 ? 1 : root.peek-side == 2 ? 2 : root.peek-side == 3 ? 3 : 0;
@@ -750,6 +834,11 @@ export component Island inherits Window {
                         if root.note-count > 0 : BellBadge {
                             y: 8px;
                             count: root.note-count;
+                        }
+                        // has this song got lyrics?
+                        if root.lyric-state != 0 : Rectangle {
+                            width: 14px;
+                            LyricGlyph { y: 11px; state: root.lyric-state; tint: root.accent; }
                         }
                         Wave {
                             y: 10px;
@@ -1488,7 +1577,8 @@ export component Island inherits Window {
                             width: parent.width;
                             height: 22px;
                             text: line;
-                            color: k == root.lyric-index ? T.ink : T.muted;
+                            // plain (untimed) lyrics: everything readable, nothing highlighted
+                            color: k == root.lyric-index || root.lyric-state == 3 ? T.ink : T.muted;
                             font-size: 13px;
                             font-weight: k == root.lyric-index ? 600 : 400;
                             overflow: elide;
@@ -1770,6 +1860,14 @@ export component Island inherits Window {
                             reduce-motion: root.reduce-motion;
                             clicked => { root.next-track(); }
                         }
+                    }
+                    // lyrics for this song: found / plain / none, tap to open
+                    if root.lyric-state != 0 : LyricChip {
+                        x: parent.width - self.width;
+                        y: 98px;
+                        state: root.lyric-state;
+                        tint: root.accent;
+                        open => { root.select-panel(4); }
                     }
                 }
 
