@@ -9,6 +9,9 @@
 # for new users, and lists the commits since the last tag as release notes.
 # Every Islo 0.3.8 or newer picks it up within a day.
 #
+# If you already made the release on GitHub for that tag (by hand, or as a
+# draft), its title and notes stay and the files are attached to it.
+#
 # Dry run: Actions -> Release -> "Run workflow" builds without publishing
 # anything; the files are attached to that run as "islo-dist".
 
@@ -71,5 +74,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/Islo.exe "dist/Islo-$env:VERSION.zip" `
-            --title "Islo $env:VERSION" --notes-file notes.md --verify-tag
+          $files = "dist/Islo.exe", "dist/Islo-$env:VERSION.zip"
+          gh release view "${{ github.ref_name }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            # Release already made on GitHub (Draft a new release): keep its
+            # title and notes, just attach (or replace) the files.
+            gh release upload "${{ github.ref_name }}" @files --clobber
+          } else {
+            gh release create "${{ github.ref_name }}" @files `
+              --title "Islo $env:VERSION" --notes-file notes.md --verify-tag
+          }
