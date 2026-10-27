@@ -17,7 +17,7 @@ use crate::shelf::{self, DropEvent, Entry};
 use crate::spring::Spring;
 use crate::system::{self, Battery};
 use crate::{Island, NearbyItem, NoteItem, PetSkin, SettingsWindow, ShelfItem};
-use crate::{audio, brightness, live, lyrics, media, notify, pet, update};
+use crate::{audio, brightness, live, lyrics, media, notify, package, pet, update};
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -267,6 +267,12 @@ struct App {
     notify_tx: Option<Sender<notify::Cmd>>,
     /// 0 unknown, 1 unavailable (no package), 2 needs access, 3 denied, 4 working
     notify_state: i32,
+    /// Show Windows' access prompt as soon as the listener says it needs it
+    /// (the user just turned notifications on, or Set up just restarted Islo).
+    notify_ask: bool,
+    /// Set up (registering Islo with Windows): running, and its last error.
+    notify_setting_up: bool,
+    notify_setup_error: String,
     notes: Vec<notify::Note>,
     known_notes: Vec<u32>,
     dismissed: Vec<u32>,
@@ -1704,6 +1710,9 @@ impl App {
             notify::Event::NeedsAccess => {
                 self.notify_state = 2;
                 self.notify_tx = None;
+                if std::mem::take(&mut self.notify_ask) {
+                    self.ask_notify_access();
+                }
             }
             notify::Event::Denied => {
                 self.notify_state = 3;
@@ -2390,6 +2399,12 @@ impl App {
                 with_app(|a| a.install_update());
             });
             s.on_open_releases(|| system::open_path(std::path::Path::new(&update::releases_page())));
+            s.on_set_up_notifications(|| {
+                with_app(|a| a.set_up_notifications());
+            });
+            s.on_remove_notifications(|| {
+                with_app(|a| a.remove_notifications());
+            });
             s.window().on_close_requested(|| {
                 with_app(|a| a.mem_timer.stop());
                 // Free the settings UI once closed (it's rebuilt on next open).
@@ -2465,13 +2480,20 @@ impl App {
         s.set_has_live(true);
         s.set_has_lyrics(true);
         s.set_has_pet(true);
-        let (avail, desc) = match self.notify_state {
-            4 => (true, "Show new notifications inside the island. Calls from Teams, WhatsApp or Phone Link ring in green."),
-            2 => (true, "Turn this on, then allow Islo in the Windows prompt."),
-            3 => (true, "Windows blocked Islo. Allow it under Settings > Privacy & security > Notifications."),
-            _ => (false, "Needs Islo registered as a package: run install-notifications.ps1 once (see README)."),
+        // 0 toggle, 1 "Set up" button, 2 setting up
+        let setup = if notify::has_identity() { 0 } else if self.notify_setting_up { 2 } else { 1 };
+        let desc = match (setup, self.notify_state) {
+            (2, _) => "Setting up. Islo restarts by itself when it's done.".to_string(),
+            _ if !self.notify_setup_error.is_empty() => self.notify_setup_error.clone(),
+            (1, _) if package::developer_mode() => {
+                "Windows only shares notifications with registered apps. Set up registers Islo and restarts it.".to_string()
+            }
+            (1, _) => "Windows only shares notifications with registered apps. Set up turns on Developer Mode (Windows asks once) and registers Islo.".to_string(),
+            (_, 2) => "Turn this on, then allow Islo in the Windows prompt.".to_string(),
+            (_, 3) => "Windows blocked Islo. Allow it under Settings > Privacy & security > Notifications.".to_string(),
+            _ => "Show new notifications inside the island. Calls from Teams, WhatsApp or Phone Link ring in green.".to_string(),
         };
-        s.set_notifications_available(avail);
+        s.set_notifications_setup(setup);
         s.set_notifications_desc(desc.into());
         s.set_update_check(c.update_check);
         self.push_update_ui();
@@ -2558,24 +2580,73 @@ impl App {
                 with_app(|a| a.start_peek());
             });
         }
-        if key == "notifications" && self.cfg.notifications && self.notify_state == 2 {
-            // show Windows' consent prompt, then start listening
-            notify::request_access(|ok| {
-                post(move |a| {
-                    if ok {
-                        a.notify_state = 0;
-                        a.notify_tx = None;
-                        a.update_notify();
-                    } else {
-                        a.notify_state = 3;
-                        a.push_settings();
-                    }
-                })
-            });
+        if key == "notifications" && self.cfg.notifications {
+            if self.notify_state == 2 {
+                self.ask_notify_access();
+            } else {
+                // not checked yet: ask once the listener reports it needs access
+                self.notify_ask = true;
+            }
         }
         self.push_lyric_state();
         self.lyrics_sync();
         self.apply_config();
+    }
+
+    /// Show Windows' consent prompt, then start listening.
+    fn ask_notify_access(&mut self) {
+        notify::request_access(|ok| {
+            post(move |a| {
+                if ok {
+                    a.notify_state = 0;
+                    a.notify_tx = None;
+                    a.update_notify();
+                } else {
+                    a.notify_state = 3;
+                    a.push_settings();
+                }
+            })
+        });
+    }
+
+    /// Settings > Notifications > Set up: register Islo with Windows, then
+    /// restart with notifications on (only a new process gets the identity).
+    fn set_up_notifications(&mut self) {
+        if self.notify_setting_up {
+            return;
+        }
+        self.notify_setting_up = true;
+        self.notify_setup_error.clear();
+        self.push_settings();
+        package::set_up(|result| {
+            post(move |a| {
+                a.notify_setting_up = false;
+                match result {
+                    Ok(()) => {
+                        a.cfg.notifications = true;
+                        a.cfg.save();
+                        if package::relaunch() {
+                            quit();
+                            return;
+                        }
+                        a.notify_setup_error = "Islo is registered. Quit Islo and start it again to see notifications.".into();
+                    }
+                    Err(msg) => a.notify_setup_error = msg,
+                }
+                a.push_settings();
+            })
+        });
+    }
+
+    /// Settings > Notifications > Remove: unregister Islo and restart without
+    /// the identity (the row shows Set up again).
+    fn remove_notifications(&mut self) {
+        if package::remove_and_relaunch() {
+            quit();
+            return;
+        }
+        self.notify_setup_error = "Couldn't start PowerShell to remove Islo's registration.".into();
+        self.push_settings();
     }
 
     fn flash_saved(&mut self, key: &str) {
@@ -3123,6 +3194,13 @@ pub fn run() -> Result<(), slint::PlatformError> {
         home_timer: Timer::default(),
         notify_tx: None,
         notify_state: 0,
+        notify_ask: std::env::args().any(|a| a == package::READY_ARG),
+        notify_setting_up: false,
+        notify_setup_error: if std::env::args().any(|a| a == package::REMOVE_FAILED_ARG) {
+            "Windows didn't remove Islo's registration. Try Remove again.".into()
+        } else {
+            String::new()
+        },
         notes: Vec::new(),
         known_notes: Vec::new(),
         dismissed: Vec::new(),

@@ -181,7 +181,7 @@ pub fn monitor_scale(m: HMONITOR) -> f32 {
 
 // ---------------- theme & motion ----------------
 
-fn reg_dword(root: HKEY, path: PCWSTR, name: PCWSTR) -> Option<u32> {
+pub fn reg_dword(root: HKEY, path: PCWSTR, name: PCWSTR) -> Option<u32> {
     let mut data = 0u32;
     let mut size = 4u32;
     let r = unsafe { RegGetValueW(root, path, name, RRF_RT_REG_DWORD, None, Some(&mut data as *mut _ as _), Some(&mut size)) };

@@ -7,8 +7,9 @@ you reach for it.
 
 ## Run it
 
-Double-click `Islo.exe` (if you have `Islo-new.exe`, quit Islo from the tray,
-delete the old `Islo.exe` and rename the new one). A tray icon appears:
+Download `Islo.exe` from the latest release, put it in a folder of its own that
+you can write to (Documents, Desktop or `%LOCALAPPDATA%`, not `C:\Program Files`)
+and double-click it. That one file is the whole app. A tray icon appears:
 left-click opens Settings, right-click gives Settings / Hide / Quit.
 Settings are saved in `islo.ini` next to the exe, so nothing is written to C:.
 
@@ -69,19 +70,27 @@ versions arrive by themselves.
 
 ### Turning on notifications (one time)
 
-Windows only lets apps with a *package identity* read notifications. Double-click
-**`install-notifications.cmd`**:
+Windows only lets apps with a *package identity* read notifications. In Islo
+Settings → Modules → Notifications, click **Set up**:
 
-1. If Developer Mode is off, Windows Settings opens. Switch Developer Mode on
-   (this is the only step that needs administrator rights), then run the script again.
-2. The script registers `package\AppxManifest.xml` as a *sparse package* for the
-   `Islo.exe` in this folder. Nothing is copied or installed; Windows just gives
-   Islo.exe an identity. It also renames `Islo-new.exe` to `Islo.exe` and restarts Islo.
-3. In Islo Settings → Modules, turn on **Notifications** and allow access when Windows asks.
+1. If Developer Mode is off, Windows asks for permission to turn it on (it's a
+   machine-wide setting, so it needs an administrator once). Choose **Yes**.
+2. Islo writes its package files (`package\` and `Assets\`, baked into Islo.exe)
+   next to Islo.exe and registers them as a *sparse package*. Nothing is
+   installed; Windows just gives Islo.exe an identity.
+3. Islo restarts with Notifications on. Allow access when Windows asks.
 
-To undo: `install-notifications.cmd -Uninstall`. If you move the Islo folder, run
-the script again. To share Islo with other people without the Developer Mode
-step, the package would need a real code-signing certificate or the Microsoft Store.
+The exe has to be named `Islo.exe`. If you move the Islo folder, click **Set up**
+again. To undo, click **Remove** next to the Notifications toggle: Islo
+unregisters itself and restarts without notifications. Developer Mode stays on
+(turn it off in Windows Settings → System → For developers if you like), and the
+`package` and `Assets` folders next to Islo.exe can be deleted. Without Islo,
+run this in PowerShell instead:
+```powershell
+Get-AppxPackage -Name Islo | Remove-AppxPackage
+```
+To skip the Developer Mode step, the package would need a real code-signing
+certificate or the Microsoft Store (options in `TODO.md`).
 
 ## Why it's light
 
@@ -116,12 +125,13 @@ src/audio.rs          volume notifications + set volume
 src/brightness.rs     WMI brightness events
 src/live.rs           mic / camera in use, Windows Focus
 src/notify.rs         notifications (UserNotificationListener) and calls
+src/package.rs        Settings > Notifications > Set up: writes out package/ and registers it
 src/pet.rs            Mochi + Bluetooth LE beacons for visits
 src/system.rs         battery, full screen, tray, autostart, theme, monitors, hotkeys, flyout
 src/shelf.rs          drag & drop in/out, file icons
 src/config.rs         islo.ini load/save
 src/snapshot.rs       (Linux/macOS only) renders UI states to PNG for review
-package/              sparse package manifest + logos (notifications)
+package/              sparse package manifest + logos (notifications), baked into Islo.exe by build.rs
 res/                  app icon + exe manifest, pre-compiled (no resource compiler needed)
 ```
 
@@ -181,23 +191,31 @@ git tag v0.3.9
 git push origin v0.3.9
 ```
 `.github/workflows/release.yml` builds Islo on GitHub, creates the release with
-both files, and uses the commit messages since the last tag as release notes
+`Islo.exe`, and uses the commit messages since the last tag as release notes
 (edit them on GitHub afterwards if you like; the first lines show in Settings).
-A tag that doesn't match the `Cargo.toml` version fails without publishing. To
-try the build without releasing: **Actions → Release → Run workflow**.
+A tag that doesn't match the `Cargo.toml` version fails without publishing. If
+you already drafted the release on GitHub for that tag, its notes stay and
+`Islo.exe` is attached to it (publish the draft afterwards). To try the build
+without releasing: **Actions → Release → Run workflow**.
+
+To redo a tag (for example after a failed run), move it to the newest commit:
+```powershell
+git tag -f v0.3.9
+git push -f origin v0.3.9
+```
 
 **By hand:**
 
 1. Bump `version` in `Cargo.toml` (for example `0.3.8` → `0.3.9`).
-2. Build and package:
+2. Build:
    ```powershell
    powershell -ExecutionPolicy Bypass -File release.ps1
    ```
-   This makes `dist\Islo.exe` (what the updater downloads) and
-   `dist\Islo-<version>.zip` (for new users).
+   This makes `dist\Islo.exe`, the whole app: new users download it and the
+   updater fetches it.
 3. On GitHub (repository set in `src/update.rs`, `REPO`, and it must be public):
    **Releases → Draft a new release**, tag `v<version>` (for example `v0.3.9`),
-   attach **both** files, write what changed (the first lines show in Settings),
+   attach `Islo.exe`, write what changed (the first lines show in Settings),
    and publish.
 
 Every Islo 0.3.8 or newer sees it within a day. Keep the asset name exactly

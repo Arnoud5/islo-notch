@@ -26,6 +26,8 @@ mod media;
 #[cfg(windows)]
 mod notify;
 #[cfg(windows)]
+mod package;
+#[cfg(windows)]
 mod pet;
 #[cfg(windows)]
 mod platform;

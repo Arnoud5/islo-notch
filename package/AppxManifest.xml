@@ -2,7 +2,8 @@
 <!-- Sparse package for Islo: gives the normal Islo.exe (next to this folder) a
      package identity so Windows lets it read notifications. Nothing is copied or
      installed; Windows just records that Islo.exe belongs to this identity.
-     Registered by install-notifications.ps1. -->
+     Baked into Islo.exe and registered from Settings > Notifications > Set up
+     (src/package.rs). -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"

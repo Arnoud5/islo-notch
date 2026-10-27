@@ -421,7 +421,8 @@ export component SettingsWindow inherits Window {
     in-out property <bool> mod-battery: true;
     in-out property <bool> mod-shelf: true;
     in-out property <bool> mod-notifications: false;
-    in property <bool> notifications-available: false;
+    // 0 the toggle, 1 "Set up" (Islo isn't registered with Windows yet), 2 setting up
+    in property <int> notifications-setup: 1;
     in property <string> notifications-desc: "";
     in-out property <bool> mod-timer: true;
     in-out property <bool> mod-privacy: true;
@@ -458,6 +459,8 @@ export component SettingsWindow inherits Window {
     callback check-update();
     callback install-update();
     callback open-releases();
+    callback set-up-notifications();
+    callback remove-notifications();
 
     HorizontalLayout {
         // ---------- sidebar ----------
@@ -789,11 +792,29 @@ export component SettingsWindow inherits Window {
                             name: "Notifications";
                             desc: root.notifications-desc;
                             saved: root.saved-key == "notifications";
-                            Toggle {
-                                y: 18px;
-                                enabled: root.notifications-available;
-                                checked <=> root.mod-notifications;
-                                toggled => { root.changed("notifications"); }
+                            min-h: 72px;
+                            // Remove unregisters Islo (and restarts it); centered with the toggle
+                            if root.notifications-setup == 0 : HorizontalLayout {
+                                spacing: 16px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Button {
+                                        text: "Remove";
+                                        clicked => { root.remove-notifications(); }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Toggle {
+                                        checked <=> root.mod-notifications;
+                                        toggled => { root.changed("notifications"); }
+                                    }
+                                }
+                            }
+                            if root.notifications-setup == 1 : Button {
+                                y: 20px;
+                                text: "Set up";
+                                clicked => { root.set-up-notifications(); }
                             }
                         }
                     }

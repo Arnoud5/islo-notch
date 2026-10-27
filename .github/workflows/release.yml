@@ -5,8 +5,8 @@
 #      git push origin v0.3.9
 #
 # GitHub then builds Islo on Windows (release.ps1), creates the release
-# "Islo 0.3.9" with Islo.exe (what the in-app updater downloads) and the zip
-# for new users, and lists the commits since the last tag as release notes.
+# "Islo 0.3.9" with Islo.exe (what new users download and the in-app updater
+# fetches), and lists the commits since the last tag as release notes.
 # Every Islo 0.3.8 or newer picks it up within a day.
 #
 # If you already made the release on GitHub for that tag (by hand, or as a
@@ -74,7 +74,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $files = "dist/Islo.exe", "dist/Islo-$env:VERSION.zip"
+          $files = @("dist/Islo.exe")
           gh release view "${{ github.ref_name }}" *> $null
           if ($LASTEXITCODE -eq 0) {
             # Release already made on GitHub (Draft a new release): keep its

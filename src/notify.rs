@@ -1,8 +1,8 @@
 //! Notifications in the island, read with Windows' UserNotificationListener.
 //!
 //! Windows only lets apps with a *package identity* read notifications, so
-//! this works once Islo is registered as a sparse package
-//! (`install-notifications.ps1`, see the README). Without identity the module
+//! this works once Islo is registered as a sparse package (Settings >
+//! Notifications > Set up, see package.rs). Without identity the module
 //! reports itself unavailable and Islo runs exactly as before.
 //!
 //! Changes are pushed by the `NotificationChanged` event where Windows allows
