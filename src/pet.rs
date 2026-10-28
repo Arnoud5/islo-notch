@@ -216,19 +216,20 @@ pub fn contrast(a: u32, b: u32) -> f32 {
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
-/// The colors Mochi is drawn with: (body, eyes, body on the black island).
-/// Eyes that would vanish on the body (under 3:1) become black or white,
-/// and a body too dark for the island is drawn a step lighter there.
-pub fn colors(body: u32, eyes: u32) -> (u32, u32, u32) {
-    let eyes = if contrast(body, eyes) >= 3.0 {
-        eyes
-    } else if contrast(body, 0x000000) >= contrast(body, 0xffffff) {
-        0x000000
-    } else {
-        0xffffff
-    };
+/// The colors Mochi is drawn with: (body, eyes, body on the black island, eye
+/// outline). The eye color you pick is always kept; when it would vanish on the
+/// body (under 3:1), the eyes get a thin black or white outline instead. A body
+/// too dark for the island is drawn a step lighter there.
+pub fn colors(body: u32, eyes: u32) -> (u32, u32, u32, Option<u32>) {
     let island = if contrast(body, 0x000000) < 1.25 { 0x161616 } else { body };
-    (body, eyes, island)
+    let ring = if contrast(body, eyes) >= 3.0 && contrast(island, eyes) >= 3.0 {
+        None
+    } else if contrast(eyes, 0x000000) >= contrast(eyes, 0xffffff) {
+        Some(0x000000)
+    } else {
+        Some(0xffffff)
+    };
+    (body, eyes, island, ring)
 }
 
 /// Mochi's moods: the `face` numbers of the Mochi component (ui/icons.slint).
@@ -324,11 +325,11 @@ mod tests {
     #[test]
     fn eyes_stay_visible_on_any_body() {
         // the brand look is kept as is, and drawn a step lighter on the black island
-        assert_eq!(colors(0x000000, 0xd3b63b), (0x000000, 0xd3b63b, 0x161616));
-        // white eyes on a snow body would vanish: black instead
-        assert_eq!(colors(0xf5f5f5, 0xffffff).1, 0x000000);
-        // black eyes on a near-black body: white instead
-        assert_eq!(colors(0x101010, 0x000000).1, 0xffffff);
+        assert_eq!(colors(0x000000, 0xd3b63b), (0x000000, 0xd3b63b, 0x161616, None));
+        // the picked eye color always stays; an outline makes it readable
+        assert_eq!(colors(0xf5f5f5, 0xffffff), (0xf5f5f5, 0xffffff, 0xf5f5f5, Some(0x000000)));
+        assert_eq!(colors(0x101010, 0x000000).1, 0x000000);
+        assert_eq!(colors(0x101010, 0x000000).3, Some(0xffffff));
         // a colored body shows as itself in the island
         assert_eq!(colors(0x71bfff, 0x000000).2, 0x71bfff);
         assert!((contrast(0x000000, 0xffffff) - 21.0).abs() < 0.01);

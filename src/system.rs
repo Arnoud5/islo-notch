@@ -622,6 +622,72 @@ pub fn today() -> (String, u64) {
     (format_date(t.wDayOfWeek, t.wDay, t.wMonth), ms_to_midnight(t.wHour, t.wMinute, t.wSecond, t.wMilliseconds))
 }
 
+/// The time now in the user's own short format ("15:31" or "3:31 PM", as the
+/// taskbar shows it), and the milliseconds until the next minute starts.
+pub fn clock_now() -> (String, u64) {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let pattern = reg_string(HKEY_CURRENT_USER, w!("Control Panel\\International"), w!("sShortTime")).unwrap_or_else(|| "HH:mm".into());
+    let am = reg_string(HKEY_CURRENT_USER, w!("Control Panel\\International"), w!("s1159")).unwrap_or_else(|| "AM".into());
+    let pm = reg_string(HKEY_CURRENT_USER, w!("Control Panel\\International"), w!("s2359")).unwrap_or_else(|| "PM".into());
+    let next = 60_000 - (t.wSecond as u64 * 1000 + t.wMilliseconds as u64) + 150;
+    (format_time(&pattern, t.wHour, t.wMinute, &am, &pm), next)
+}
+
+/// Windows' short-time pattern: H/HH 24-hour, h/hh 12-hour, mm minutes, tt AM/PM.
+pub fn format_time(pattern: &str, h: u16, m: u16, am: &str, pm: &str) -> String {
+    let mut out = String::new();
+    let cs: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        let mut n = 1;
+        while i + n < cs.len() && cs[i + n] == c {
+            n += 1;
+        }
+        match c {
+            'H' => out += &if n >= 2 { format!("{h:02}") } else { h.to_string() },
+            'h' => {
+                let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+                out += &if n >= 2 { format!("{h12:02}") } else { h12.to_string() };
+            }
+            'm' => out += &if n >= 2 { format!("{m:02}") } else { m.to_string() },
+            't' => {
+                let mark = if h < 12 { am } else { pm };
+                if n >= 2 {
+                    out += mark;
+                } else {
+                    out.extend(mark.chars().take(1)); // never split a multi-byte letter
+                }
+            }
+            's' => {} // seconds: never in the island
+            '\'' => {
+                // quoted literal
+                let mut j = i + 1;
+                while j < cs.len() && cs[j] != '\'' {
+                    out.push(cs[j]);
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+            _ => out.extend(std::iter::repeat_n(c, n)),
+        }
+        i += n;
+    }
+    out.trim().to_string()
+}
+
+fn reg_string(root: HKEY, path: PCWSTR, name: PCWSTR) -> Option<String> {
+    let mut buf = [0u16; 64];
+    let mut size = (buf.len() * 2) as u32;
+    let r = unsafe { RegGetValueW(root, path, name, RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as _), Some(&mut size)) };
+    if r != ERROR_SUCCESS {
+        return None;
+    }
+    let len = (size as usize / 2).saturating_sub(1).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
 fn format_date(weekday: u16, day: u16, month: u16) -> String {
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

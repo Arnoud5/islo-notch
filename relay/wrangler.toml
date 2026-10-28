@@ -1,0 +1,13 @@
+# Islo's game relay on Cloudflare Workers (free plan). Deploy: see README.md here.
+name = "islo-relay"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+# Durable Objects on the free plan must use SQLite storage
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

@@ -24,6 +24,34 @@ pub struct Note {
     pub body: String,
     /// 100 ns ticks since 1601 (same clock as FILETIME)
     pub time: i64,
+    /// The sending app's own icon, ICON x ICON straight RGBA (None: Windows has none).
+    pub icon: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+/// Size of the app icons read for notifications (logical px in the island: 24).
+pub const ICON: u32 = 48;
+
+type Icons = std::collections::HashMap<String, Option<std::sync::Arc<Vec<u8>>>>;
+
+/// The app's logo as Windows shows it (package logo, or the icon of the app's
+/// shortcut), decoded once per app and kept for the session.
+fn app_icon(info: &windows::ApplicationModel::AppInfo) -> Option<std::sync::Arc<Vec<u8>>> {
+    use windows::Graphics::Imaging::*;
+    let size = windows::Foundation::Size { Width: ICON as f32, Height: ICON as f32 };
+    let stream = info.DisplayInfo().ok()?.GetLogo(size).ok()?.OpenReadAsync().ok()?.join().ok()?;
+    let decoder = BitmapDecoder::CreateAsync(&stream).ok()?.join().ok()?;
+    let t = BitmapTransform::new().ok()?;
+    t.SetScaledWidth(ICON).ok()?;
+    t.SetScaledHeight(ICON).ok()?;
+    t.SetInterpolationMode(BitmapInterpolationMode::Fant).ok()?;
+    let data = decoder
+        .GetPixelDataTransformedAsync(BitmapPixelFormat::Rgba8, BitmapAlphaMode::Straight, &t, ExifOrientationMode::IgnoreExifOrientation, ColorManagementMode::DoNotColorManage)
+        .ok()?
+        .join()
+        .ok()?;
+    let px = data.DetachPixelData().ok()?.to_vec();
+    // an empty (fully transparent) logo is no logo
+    (px.len() == (ICON * ICON * 4) as usize && px.chunks_exact(4).any(|p| p[3] > 16)).then(|| std::sync::Arc::new(px))
 }
 
 impl Note {
@@ -89,18 +117,20 @@ pub fn start(cb: impl Fn(Event) + Send + Sync + 'static) -> Sender<Cmd> {
     tx
 }
 
-fn read(l: &UserNotificationListener) -> windows::core::Result<Vec<Note>> {
+fn read(l: &UserNotificationListener, icons: &mut Icons) -> windows::core::Result<Vec<Note>> {
     let list = l.GetNotificationsAsync(NotificationKinds::Toast)?.join()?;
     let generic = KnownNotificationBindings::ToastGeneric()?;
     let mut out = Vec::new();
     for n in list {
         let id = n.Id().unwrap_or(0);
-        let (app, aumid) = n
+        let (app, aumid, icon) = n
             .AppInfo()
             .map(|a| {
                 let name = a.DisplayInfo().and_then(|d| d.DisplayName()).map(|s| s.to_string()).unwrap_or_default();
                 let aumid = a.AppUserModelId().map(|s| s.to_string()).unwrap_or_default();
-                (name, aumid)
+                let key = if aumid.is_empty() { name.clone() } else { aumid.clone() };
+                let icon = icons.entry(key).or_insert_with(|| app_icon(&a)).clone();
+                (name, aumid, icon)
             })
             .unwrap_or_default();
         let texts: Vec<String> = n
@@ -115,7 +145,7 @@ fn read(l: &UserNotificationListener) -> windows::core::Result<Vec<Note>> {
         let body = crate::system::display_text(&texts.iter().skip(1).cloned().collect::<Vec<_>>().join(" "), 200);
         let app = crate::system::display_text(&app, 40);
         let time = n.CreationTime().map(|t| t.UniversalTime).unwrap_or(0);
-        out.push(Note { id, app, aumid, title, body, time });
+        out.push(Note { id, app, aumid, title, body, time, icon });
     }
     // newest first
     out.sort_by(|a, b| b.time.cmp(&a.time));
@@ -135,7 +165,8 @@ fn run(rx: Receiver<Cmd>, tx: Sender<Cmd>, cb: std::sync::Arc<dyn Fn(Event) + Se
             return Ok(());
         }
     }
-    let mut last = read(&l).unwrap_or_default();
+    let mut icons = Icons::new();
+    let mut last = read(&l, &mut icons).unwrap_or_default();
     cb(Event::List(last.clone()));
 
     // Prefer the push event. Desktop apps sometimes aren't allowed to subscribe;
@@ -165,7 +196,7 @@ fn run(rx: Receiver<Cmd>, tx: Sender<Cmd>, cb: std::sync::Arc<dyn Fn(Event) + Se
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
-        if let Ok(now) = read(&l) {
+        if let Ok(now) = read(&l, &mut icons) {
             if now != last {
                 cb(Event::List(now.clone()));
                 last = now;

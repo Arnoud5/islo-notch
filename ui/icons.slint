@@ -100,6 +100,7 @@ export component Mochi inherits Rectangle {
     in property <float> stretch: 1;    // >1 pulled away from where it sits or hangs, <1 squashed
     in property <bool> crumbs: false;  // chomping
     in property <bool> hearts: false;  // a heart floats up (love, or a treat it liked)
+    in property <brush> eye-ring: transparent; // outline when the eye color is close to the body
     width: 20px;
     height: 20px;
     // px per drawing unit (the artboard is 56 units, starting at 4)
@@ -219,6 +220,8 @@ export component Mochi inherits Rectangle {
             height: body.eh;
             border-radius: min(body.erx, body.eh / 2);
             background: root.eyes;
+            border-width: root.eye-ring == transparent ? 0px : max(0.8px, 1.2 * body.ux);
+            border-color: root.eye-ring;
         }
         if root.f == 0 : Rectangle {
             x: (root.e2x - 4) * body.ux - body.erx + (root.awake ? body.lx : 0);
@@ -227,6 +230,8 @@ export component Mochi inherits Rectangle {
             height: body.eh;
             border-radius: min(body.erx, body.eh / 2);
             background: root.eyes;
+            border-width: root.eye-ring == transparent ? 0px : max(0.8px, 1.2 * body.ux);
+            border-color: root.eye-ring;
         }
         // Mood eyes
         if root.fill-cmd != "" : Path {
@@ -237,6 +242,8 @@ export component Mochi inherits Rectangle {
             viewbox-width: 56;
             viewbox-height: 56;
             fill: root.eyes;
+            stroke: root.eye-ring;
+            stroke-width: root.eye-ring == transparent ? 0px : max(0.8px, 1.2 * min(body.ux, body.uy));
             commands: root.fill-cmd;
         }
         if root.line-cmd != "" : Path {

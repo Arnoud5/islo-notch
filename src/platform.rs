@@ -858,7 +858,7 @@ impl Platform for Win32Platform {
 // ---------------------------------------------------------------------------
 const CF_UNICODETEXT: u32 = 13;
 
-fn clipboard_set(text: &str) {
+pub fn clipboard_set(text: &str) {
     use windows::Win32::System::DataExchange::*;
     use windows::Win32::System::Memory::*;
     let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
@@ -879,7 +879,7 @@ fn clipboard_set(text: &str) {
     }
 }
 
-fn clipboard_get() -> Option<String> {
+pub fn clipboard_get() -> Option<String> {
     use windows::Win32::System::DataExchange::*;
     use windows::Win32::System::Memory::*;
     unsafe {

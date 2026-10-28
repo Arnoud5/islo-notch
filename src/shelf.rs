@@ -223,3 +223,61 @@ pub fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     }
 }
+
+/// Files copied in Explorer (Ctrl+C), for the shelf's "Paste" button.
+pub fn clipboard_files() -> Vec<PathBuf> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard};
+    let mut files = Vec::new();
+    unsafe {
+        if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_err() || OpenClipboard(None).is_err() {
+            return files;
+        }
+        if let Ok(h) = GetClipboardData(CF_HDROP.0 as u32) {
+            let hdrop = HDROP(h.0);
+            let count = DragQueryFileW(hdrop, u32::MAX, None);
+            for i in 0..count.min(64) {
+                let len = DragQueryFileW(hdrop, i, None) as usize;
+                let mut buf = vec![0u16; len + 1];
+                DragQueryFileW(hdrop, i, Some(&mut buf));
+                files.push(PathBuf::from(String::from_utf16_lossy(&buf[..len])));
+            }
+        }
+        let _ = CloseClipboard();
+    }
+    files
+}
+
+/// Windows' file picker (several files at once), for the shelf's "Add files…".
+/// Runs on its own thread so Islo's event loop isn't re-entered while it's open;
+/// `done` gets the picked files (empty when cancelled).
+pub fn pick_files(owner: HWND, done: impl FnOnce(Vec<PathBuf>) + Send + 'static) {
+    let owner = owner.0 as isize;
+    let _ = std::thread::Builder::new().name("islo-pick".into()).spawn(move || {
+        let mut files = Vec::new();
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            if let Ok(dlg) = CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) {
+                let opts = dlg.GetOptions().unwrap_or_default();
+                let _ = dlg.SetOptions(opts | FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM);
+                let _ = dlg.SetTitle(windows::core::w!("Add to the shelf"));
+                if dlg.Show(Some(HWND(owner as _))).is_ok() {
+                    if let Ok(items) = dlg.GetResults() {
+                        let n = items.GetCount().unwrap_or(0);
+                        for k in 0..n.min(64) {
+                            if let Ok(item) = items.GetItemAt(k) {
+                                if let Ok(p) = item.GetDisplayName(SIGDN_FILESYSPATH) {
+                                    if let Ok(s) = p.to_string() {
+                                        files.push(PathBuf::from(s));
+                                    }
+                                    CoTaskMemFree(Some(p.0 as _));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            CoUninitialize();
+        }
+        done(files);
+    });
+}

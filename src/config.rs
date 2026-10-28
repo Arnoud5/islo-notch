@@ -80,6 +80,16 @@ pub struct Config {
     pub saver_pause: bool,
     // updates
     pub update_check: bool, // look for a new version on GitHub once a day
+    // 0.3.12
+    pub clock: i32,         // right side of the quiet pill and the open header: 0 clock, 1 clock + date, 2 date
+    pub keep_open: bool,    // pinned: the island stays expanded until unpinned
+    pub soft_shadow: bool,  // a soft shadow under the island
+    pub media_rest: bool,   // back to the quiet pill 5 s after the music pauses
+    pub lyric_align: i32,   // 0 left, 1 center, 2 right
+    pub pet_touch: bool,    // Mochi can be petted and carried
+    pub games: bool,        // the tic-tac-toe tab
+    pub games_online: bool, // play friends through the relay with a room code
+    pub game_level: i32,    // 0 easy, 1 medium, 2 hard
 }
 
 impl Default for Config {
@@ -125,6 +135,15 @@ impl Default for Config {
             hide_fullscreen: true,
             saver_pause: true,
             update_check: true,
+            clock: 1,
+            keep_open: false,
+            soft_shadow: true,
+            media_rest: true,
+            lyric_align: 0,
+            pet_touch: true,
+            games: true,
+            games_online: true,
+            game_level: 1,
         }
     }
 }
@@ -201,6 +220,15 @@ impl Config {
                 "hide_fullscreen" => c.hide_fullscreen = b,
                 "saver_pause" => c.saver_pause = b,
                 "update_check" => c.update_check = b,
+                "clock" => c.clock = i(1).clamp(0, 2),
+                "keep_open" => c.keep_open = b,
+                "soft_shadow" => c.soft_shadow = b,
+                "media_rest" => c.media_rest = b,
+                "lyric_align" => c.lyric_align = i(0).clamp(0, 2),
+                "pet_touch" => c.pet_touch = b,
+                "games" => c.games = b,
+                "games_online" => c.games_online = b,
+                "game_level" => c.game_level = i(1).clamp(0, 2),
                 _ => {}
             }
         }
@@ -264,6 +292,19 @@ impl Config {
             b(self.saver_pause),
             b(self.update_check),
         );
+        let text = text
+            + &format!(
+                "clock={}\nkeep_open={}\nsoft_shadow={}\nmedia_rest={}\nlyric_align={}\npet_touch={}\ngames={}\ngames_online={}\ngame_level={}\n",
+                self.clock,
+                b(self.keep_open),
+                b(self.soft_shadow),
+                b(self.media_rest),
+                self.lyric_align,
+                b(self.pet_touch),
+                b(self.games),
+                b(self.games_online),
+                self.game_level,
+            );
         let _ = std::fs::write(Self::path(), text);
     }
 }

@@ -269,9 +269,9 @@ pub fn run() {
     i.set_compact_kind(17); i.set_call_name("Rania Putri".into()); shape(i, 260.0, 36.0, 14.0);
     render(&iw, w, h, 2.0, &format!("{out}/33-call.png"), bg);
     i.set_notes(ModelRc::new(VecModel::from(vec![
-        crate::NoteItem { app: "Snipping Tool".into(), initial: "S".into(), title: "Screenshot copied to clipboard".into(), body: "Automatically saved to screenshots folder.".into(), time: "now".into(), call: false },
-        crate::NoteItem { app: "WhatsApp".into(), initial: "W".into(), title: "Patient Journey 7.0".into(), body: "~ glenn: mas @~Luthfi M Nabil boleh bantu cek ga OPA2610260016 appointment_id: \"6c9ac858-746f-43b0-aab3-016655\"".into(), time: "2 min".into(), call: false },
-        crate::NoteItem { app: "WhatsApp".into(), initial: "W".into(), title: "Nopia".into(), body: "hope_id: -795813 https://jam.dev/c/bb60bbe0-ad61-451b-8b9e-d7db cc @Mas Kiiay Rian FO".into(), time: "2 min".into(), call: false },
+        crate::NoteItem { app: "Snipping Tool".into(), initial: "S".into(), title: "Screenshot copied to clipboard".into(), body: "Automatically saved to screenshots folder.".into(), time: "now".into(), call: false, icon: art(), has_icon: true },
+        crate::NoteItem { app: "WhatsApp".into(), initial: "W".into(), title: "Patient Journey 7.0".into(), body: "~ glenn: mas @~Luthfi M Nabil boleh bantu cek ga OPA2610260016 appointment_id: \"6c9ac858-746f-43b0-aab3-016655\"".into(), time: "2 min".into(), call: false, icon: slint::Image::default(), has_icon: false },
+        crate::NoteItem { app: "WhatsApp".into(), initial: "W".into(), title: "Nopia".into(), body: "hope_id: -795813 https://jam.dev/c/bb60bbe0-ad61-451b-8b9e-d7db cc @Mas Kiiay Rian FO".into(), time: "2 min".into(), call: false, icon: slint::Image::default(), has_icon: false },
     ])));
     i.set_mode(2); i.set_panel(6); i.set_panels(ModelRc::new(VecModel::from(vec![4, 0, 3, 6, 5, 2]))); shape(i, 380.0, 32.0 + 34.0 + 232.0, 30.0);
     render(&iw, w, 310, 2.0, &format!("{out}/34-notes-panel.png"), bg);
@@ -284,6 +284,85 @@ pub fn run() {
     render(&iw, w, h, 2.0, &format!("{out}/36-power-low.png"), bg);
     i.set_battery_level(72); i.set_power_title("On battery".into()); i.set_power_sub("About 3 h 10 min left".into());
     render(&iw, w, h, 2.0, &format!("{out}/37-power-batt.png"), bg);
+
+    // ---------------- 0.3.12 ----------------
+    let (w2, h2) = (440, 330);
+    i.set_soft_shadow(true);
+    // quiet pill: clock + date + ring, note icons
+    i.set_mode(0); i.set_compact_kind(19); i.set_featured(3); i.set_pet_awake(true); i.set_has_battery(true); i.set_battery_level(73); i.set_charging(false);
+    i.set_clock_text("15:31 · Wed 28 Oct".into()); i.set_note_count(0);
+    shape(i, 236.0, 36.0, 14.0);
+    render(&iw, w2, 120, 2.0, &format!("{out}/60-glance-clock-date.png"), bg);
+    i.set_clock_text("15:31".into());
+    shape(i, 200.0, 36.0, 14.0);
+    render(&iw, w2, 120, 2.0, &format!("{out}/61-glance-clock.png"), bg);
+    i.set_note_count(3); i.set_note_icons(ModelRc::new(VecModel::from(vec![art(), art()])));
+    i.set_clock_text("15:31 · Wed 28 Oct".into());
+    shape(i, 290.0, 36.0, 14.0);
+    render(&iw, w2, 120, 2.0, &format!("{out}/62-glance-icons.png"), bg);
+    i.set_note_count(0);
+    i.set_battery_level(41); i.set_charging(true); i.set_compact_kind(5); shape(i, 220.0, 36.0, 14.0);
+    render(&iw, w2, 120, 2.0, &format!("{out}/63-charging-ring.png"), bg);
+    i.set_charging(false); i.set_battery_level(12); i.set_compact_kind(6);
+    render(&iw, w2, 120, 2.0, &format!("{out}/64-low-ring.png"), bg);
+    i.set_battery_level(73);
+    // open: header with tabs (shelf, game), clock, ring, pin; arrows while hovering
+    i.set_mode(2); i.set_hovering(true); i.set_header_clock("15:31".into()); i.set_header_date(true);
+    i.set_panels(ModelRc::new(VecModel::from(vec![0, 1, 3, 5, 7])));
+    i.set_panel(0); i.set_panel_index(0); i.set_has_media(true);
+    shape(i, 380.0, 32.0 + 34.0 + 130.0, 30.0);
+    render(&iw, w2, h2, 2.0, &format!("{out}/65-open-media-header.png"), bg);
+    i.set_keep_open(true); i.set_panel(1); i.set_panel_index(1); i.set_shelf_items(Rc::new(VecModel::<ShelfItem>::default()).into());
+    shape(i, 380.0, 32.0 + 34.0 + 164.0, 30.0);
+    render(&iw, w2, h2, 2.0, &format!("{out}/66-shelf-empty-pinned.png"), bg);
+    i.set_keep_open(false);
+    // the volume bar inside the open island
+    i.set_panel(0); i.set_panel_index(0); i.set_vol_toast(true); i.set_hud_kind(0); i.set_hud_value(0.64);
+    shape(i, 380.0, 32.0 + 34.0 + 130.0, 30.0);
+    render(&iw, w2, h2, 2.0, &format!("{out}/67-volume-toast.png"), bg);
+    i.set_vol_toast(false);
+    // mid-swipe
+    i.set_page_x(-70.0);
+    render(&iw, w2, h2, 2.0, &format!("{out}/68-swipe.png"), bg);
+    i.set_page_x(0.0);
+    // tic-tac-toe
+    i.set_panel(7); i.set_panel_index(4); i.set_game_mode(0); i.set_game_level(1);
+    i.set_game_cells(ModelRc::new(VecModel::from(vec![1, 2, 0, 0, 1, 0, 2, 0, 0])));
+    i.set_game_status("Your turn".into()); i.set_game_sub("You 2 · Mochi 1 · Draws 0".into()); i.set_game_btn("New game".into());
+    shape(i, 380.0, 32.0 + 34.0 + 204.0, 30.0);
+    render(&iw, w2, h2, 2.0, &format!("{out}/69-game.png"), bg);
+    i.set_game_cells(ModelRc::new(VecModel::from(vec![2, 1, 1, 0, 2, 1, 0, 0, 2])));
+    i.set_game_win(ModelRc::new(VecModel::from(vec![true, false, false, false, true, false, false, false, true])));
+    i.set_game_status("Mochi wins".into()); i.set_game_face(1);
+    render(&iw, w2, h2, 2.0, &format!("{out}/70-game-won.png"), bg);
+    i.set_game_face(0); i.set_game_win(ModelRc::new(VecModel::from(vec![false; 9])));
+    i.set_game_mode(1); i.set_game_net(1); i.set_game_code("K7QF".into()); i.set_game_net_text("Send this code to a friend. Waiting for them…".into());
+    render(&iw, w2, h2, 2.0, &format!("{out}/71-game-host.png"), bg);
+    i.set_game_net(3); i.set_game_net_text("Sorry! I'm a solo developer (with a little help from AI), and Islo is free, so online games run on a free server. Today's free limit ran out. It resets tomorrow, and Mochi's still up for a game.".into());
+    render(&iw, w2, h2, 2.0, &format!("{out}/72-game-limit.png"), bg);
+    i.set_game_net(0); i.set_game_net_text("Play a friend anywhere: host a game and send them the code, or copy theirs and paste it here.".into());
+    render(&iw, w2, h2, 2.0, &format!("{out}/73-game-online-menu.png"), bg);
+    // lyrics centered
+    i.set_game_mode(0); i.set_mode(0); i.set_compact_kind(13); i.set_lyric_align(1);
+    i.set_lyric_window(ModelRc::new(VecModel::from(vec!["Every exit looks like home".into(), "Windows down, the city glows".into(), "Headlights write our names in gold".into()])));
+    shape(i, 380.0, 76.0, 30.0);
+    render(&iw, w2, 140, 2.0, &format!("{out}/74-lyrics-center.png"), bg);
+    i.set_lyric_align(2);
+    render(&iw, w2, 140, 2.0, &format!("{out}/75-lyrics-right.png"), bg);
+    i.set_lyric_align(0);
+    // Mochi carried, and an eye outline
+    i.set_compact_kind(19); i.set_clock_text("15:31".into()); shape(i, 200.0, 36.0, 14.0);
+    i.set_peek_side(1); i.set_peek_out(true); i.set_peek_free(true); i.set_peek_fx(300.0); i.set_peek_fy(120.0);
+    render(&iw, w2, 200, 2.0, &format!("{out}/76-mochi-carried.png"), bg);
+    i.set_peek_free(false); i.set_peek_pos(0.4);
+    {
+        use slint::ComponentHandle;
+        let g = i.global::<crate::PetSkin>();
+        g.set_head(slint::Color::from_rgb_u8(0xf5, 0xf5, 0xf5)); g.set_island_head(slint::Color::from_rgb_u8(0xf5, 0xf5, 0xf5));
+        g.set_eyes(slint::Color::from_rgb_u8(0xff, 0xff, 0xff)); g.set_eye_ring(slint::Color::from_rgb_u8(0, 0, 0));
+    }
+    render(&iw, w2, 200, 2.0, &format!("{out}/77-eye-outline.png"), bg);
+    i.set_peek_side(0);
 
     for (n, dark, page) in [("15-settings-appearance-dark", true, 1), ("16-settings-modules-light", false, 2), ("17-settings-general-dark", true, 0), ("38-settings-about-light", false, 4), ("39-settings-about-dark", true, 4)] {
         settings.set_dark(dark);

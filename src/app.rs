@@ -17,7 +17,7 @@ use crate::shelf::{self, DropEvent, Entry};
 use crate::spring::Spring;
 use crate::system::{self, Battery};
 use crate::{Island, NearbyItem, NoteItem, PetSkin, SettingsWindow, ShelfItem};
-use crate::{audio, brightness, live, lyrics, media, notify, package, pet, update};
+use crate::{audio, brightness, game, live, lyrics, media, notify, package, pet, update};
 use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -48,7 +48,7 @@ const GLYPH: f32 = 36.0; // one glyph slot in the side tab
 /// Island windows are a little larger than the largest shape so the shoulders
 /// and spring overshoot fit; the extra pixels are click-through.
 const WIN_W: f32 = EXPANDED_W + 60.0; // top / bottom
-const WIN_H: f32 = 310.0; // tall enough for the lyrics panel
+const WIN_H: f32 = 330.0; // tall enough for the lyrics panel and its soft shadow
 const SIDE_W: f32 = EXPANDED_W + 40.0; // left / right
 const SIDE_H: f32 = 560.0;
 
@@ -83,6 +83,7 @@ const P_TIMER: i32 = 3;
 const P_LYRICS: i32 = 4;
 const P_PET: i32 = 5;
 const P_NOTIF: i32 = 6;
+const P_GAME: i32 = 7;
 
 // side-tab glyphs
 const G_MEDIA: i32 = 0;
@@ -170,6 +171,8 @@ struct View {
     leave_timer: Timer,
     /// Mochi's gaze as last sent to this island (quantized), to skip no-op updates.
     look: (f32, f32),
+    /// Scrolling for volume over the closed island: don't let hover open it.
+    scroll_hold: bool,
 }
 
 struct App {
@@ -248,6 +251,34 @@ struct App {
     /// "Mon 26 Oct", refreshed by a single-shot timer at local midnight.
     date_text: String,
     date_timer: Timer,
+    /// "15:31" in the user's format, refreshed on the minute while a clock shows.
+    time_text: String,
+    /// Music paused for 5 s: the pill rests (back to the quiet view).
+    media_resting: bool,
+    rest_timer: Timer,
+    /// Tab switching: page glide, and the sideways-scroll gesture.
+    page_timer: Timer,
+    xacc: f32,
+    xacc_at: Instant,
+    xgo_at: Instant,
+    /// Petting and carrying Mochi.
+    strokes: u32,
+    stroke_at: Instant,
+    squish_timer: Timer,
+    hearts_timer: Timer,
+    carrying: bool,
+    /// Tic-tac-toe.
+    game_board: game::Board,
+    game_over: Option<(u8, Option<[usize; 3]>)>,
+    game_thinking: bool,
+    game_timer: Timer,
+    game_score: (u32, u32, u32),
+    game_mode: i32,
+    game_net: i32,
+    game_code: String,
+    game_net_text: String,
+    game_room: Option<game::Room>,
+    game_tx: Option<Sender<game::Cmd>>,
     // ---- Mochi: gaze, naps, blinks, peeks ----
     pointer_on: bool,      // the pointer hook is installed
     pointer_at: (i32, i32),
@@ -331,6 +362,12 @@ impl App {
         self.cfg.media && self.media.is_some()
     }
 
+    /// Media worth showing in the closed island: playing, or paused under 5 s
+    /// (with "Rest after music pauses" on; otherwise whenever there is media).
+    fn media_live(&self) -> bool {
+        self.media_visible() && !(self.cfg.media_rest && self.media_resting)
+    }
+
     /// Lyrics to show for this song (synced or plain).
     fn lyrics_on(&self) -> bool {
         self.cfg.lyrics && self.media_visible() && !self.lyrics.is_empty()
@@ -402,7 +439,7 @@ impl App {
             return C_TIMER;
         }
         // (unread notifications don't take over the pill: they show as a bell badge)
-        if self.media_visible() {
+        if self.media_live() {
             return if self.synced_on() && self.cfg.lyric_lines >= 2 { C_LYRICS } else { C_MEDIA };
         }
         if self.low_battery(10) {
@@ -440,14 +477,78 @@ impl App {
 
     /// Recompute the date and arm one timer for the next local midnight.
     fn refresh_date(&mut self) {
-        let (text, ms_left) = system::today();
-        if text != self.date_text {
-            self.date_text = text.clone();
-            self.each(|isl| isl.set_date_text(text.clone().into()));
+        let (date, to_midnight) = system::today();
+        let (time, to_minute) = system::clock_now();
+        let changed = date != self.date_text || time != self.time_text;
+        self.date_text = date;
+        self.time_text = time;
+        if changed {
+            self.push_clock();
         }
-        self.date_timer.start(TimerMode::SingleShot, Duration::from_millis(ms_left), || {
+        // wake once a minute only while a clock is on show; else at midnight
+        let clock_shown = self.cfg.clock != 2 && (self.cfg.pill_glance || self.cfg.header_date) && self.any_shown();
+        let wait = if clock_shown { to_minute } else { to_midnight };
+        self.date_timer.start(TimerMode::SingleShot, Duration::from_millis(wait), || {
             with_app(|a| a.refresh_date());
         });
+    }
+
+    /// What the quiet pill shows on the right: clock, clock and date, or date.
+    fn clock_text(&self) -> String {
+        match self.cfg.clock {
+            0 => self.time_text.clone(),
+            2 => self.date_text.clone(),
+            _ => format!("{} · {}", self.time_text, self.date_text),
+        }
+    }
+
+    /// The same for the open island's header, shortened when the tabs need the room.
+    fn header_clock(&self, v: &View) -> String {
+        if !self.cfg.header_date {
+            return String::new();
+        }
+        let n = self.panels(v).len();
+        let tabs = if n > 1 { n as f32 * 28.0 } else { 0.0 };
+        let ring = if self.cfg.battery && self.battery.present && v.panel != P_POWER { 26.0 } else { 0.0 };
+        let room = EXPANDED_W - 2.0 * PAD - tabs - ring - 2.0 * 28.0 - 8.0;
+        let width = |t: &str| t.chars().count() as f32 * 6.2 + 4.0;
+        let want = self.clock_text();
+        if width(&want) <= room {
+            want
+        } else if self.cfg.clock == 1 && width(&self.time_text) <= room {
+            self.time_text.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    fn push_clock(&self) {
+        let (pill, date) = (self.clock_text(), self.date_text.clone());
+        for v in &self.views {
+            v.island.set_clock_text(pill.clone().into());
+            v.island.set_date_text(date.clone().into());
+            v.island.set_header_clock(self.header_clock(v).into());
+        }
+    }
+
+    /// Rest mode: 5 s after the music pauses, the pill goes back to the quiet view.
+    fn update_rest(&mut self, had_media: bool, was_playing: bool) {
+        if self.media.is_none() || self.playing() {
+            self.rest_timer.stop();
+            self.media_resting = false;
+            return;
+        }
+        if !had_media {
+            self.media_resting = true; // already paused when we first saw it
+        } else if was_playing {
+            self.media_resting = false;
+            self.rest_timer.start(TimerMode::SingleShot, Duration::from_secs(5), || {
+                with_app(|a| {
+                    a.media_resting = true;
+                    a.retarget();
+                });
+            });
+        }
     }
 
     // ---------------- Mochi: gaze, naps, blinks, peeks ----------------
@@ -794,6 +895,566 @@ impl App {
         });
     }
 
+
+    // ---------------- 0.3.12: scroll, tabs, pin, shelf, petting ----------------
+
+    /// Up/down over the island: volume. The HUD shows at once, and hover doesn't
+    /// open the island under the wheel.
+    fn on_scroll(&mut self, i: usize, dy: f32) {
+        if !self.cfg.hud || dy == 0.0 {
+            return;
+        }
+        if let Some(v) = self.views.get_mut(i) {
+            if !v.expanded {
+                v.hover_timer.stop();
+                v.scroll_hold = true;
+            }
+        }
+        if let Some(tx) = &self.audio_tx {
+            let _ = tx.send(audio::Cmd::Step(if dy > 0.0 { 2.0 } else { -2.0 }));
+        }
+    }
+
+    /// Sideways scroll (touchpad, or Shift + wheel) while open: one tab per gesture.
+    fn on_scroll_x(&mut self, i: usize, dx: f32) {
+        let now = Instant::now();
+        if now - self.xacc_at > Duration::from_millis(250) {
+            self.xacc = 0.0;
+        }
+        self.xacc += dx;
+        self.xacc_at = now;
+        if self.xacc.abs() > 40.0 && now - self.xgo_at > Duration::from_millis(320) {
+            self.xgo_at = now;
+            let dir = if self.xacc < 0.0 { 1 } else { -1 };
+            self.xacc = 0.0;
+            self.tab_step(i, dir);
+        }
+    }
+
+    fn tab_step(&mut self, i: usize, dir: i32) {
+        let Some(v) = self.views.get(i) else { return };
+        if !v.expanded {
+            return;
+        }
+        let panels = self.panels(v);
+        let cur = panels.iter().position(|p| *p == v.panel).unwrap_or(0) as i32;
+        let next = cur + dir;
+        if next < 0 || next >= panels.len() as i32 {
+            self.page_bump(i, dir);
+            return;
+        }
+        self.open_panel(i, panels[next as usize]);
+    }
+
+    /// Switch the open island to panel `p`, sliding the content in from the
+    /// side we're heading to.
+    fn open_panel(&mut self, i: usize, p: i32) {
+        let Some(v) = self.views.get(i) else { return };
+        let panels = self.panels(v);
+        let from = panels.iter().position(|x| *x == v.panel).unwrap_or(0) as i32;
+        let to = panels.iter().position(|x| *x == p).unwrap_or(0) as i32;
+        if let Some(v) = self.views.get_mut(i) {
+            v.panel = p;
+        }
+        if p == P_POWER {
+            self.refresh_power();
+        }
+        if p == P_NOTIF {
+            self.unread = 0;
+            self.call = None;
+            self.update_notes_ui();
+        }
+        if p == P_GAME {
+            self.update_game_ui();
+        }
+        if p == P_PET {
+            self.greet_mood();
+        }
+        self.retarget();
+        if to != from {
+            self.page_slide(i, if to > from { 56.0 } else { -56.0 });
+        }
+    }
+
+    /// The new content starts `from` px aside and glides in (with a little overshoot).
+    fn page_slide(&mut self, i: usize, from: f32) {
+        let Some(v) = self.views.get(i) else { return };
+        if self.reduce_motion() {
+            v.island.set_page_x(0.0);
+            return;
+        }
+        v.island.set_page_anim(false);
+        v.island.set_page_x(from);
+        self.page_timer.start(TimerMode::SingleShot, Duration::from_millis(16), move || {
+            with_app(|a| {
+                if let Some(v) = a.views.get(i) {
+                    v.island.set_page_anim(true);
+                    v.island.set_page_x(0.0);
+                }
+            });
+        });
+    }
+
+    /// Pushing past the first or last tab: a small bounce instead of looping.
+    fn page_bump(&mut self, i: usize, dir: i32) {
+        let Some(v) = self.views.get(i) else { return };
+        if self.reduce_motion() {
+            return;
+        }
+        v.island.set_page_anim(true);
+        v.island.set_page_x(-dir as f32 * 14.0);
+        self.page_timer.start(TimerMode::SingleShot, Duration::from_millis(140), move || {
+            with_app(|a| {
+                if let Some(v) = a.views.get(i) {
+                    v.island.set_page_x(0.0);
+                }
+            });
+        });
+    }
+
+    /// Dragging the content sideways: it follows the finger (a third of the way
+    /// past the ends); let go past 60 px and the next tab slides in.
+    fn on_swipe(&mut self, i: usize, dx: f32, done: bool) {
+        let Some(v) = self.views.get(i) else { return };
+        let panels = self.panels(v);
+        let cur = panels.iter().position(|p| *p == v.panel).unwrap_or(0);
+        let at_end = (cur == 0 && dx > 0.0) || (cur + 1 >= panels.len() && dx < 0.0);
+        let x = if at_end { dx * 0.35 } else { dx };
+        if !done {
+            v.island.set_page_anim(false);
+            v.island.set_page_x(x);
+            return;
+        }
+        if !at_end && dx.abs() > 60.0 {
+            let next = if dx < 0.0 { cur + 1 } else { cur - 1 };
+            self.open_panel(i, panels[next]);
+        } else {
+            v.island.set_page_anim(true);
+            v.island.set_page_x(0.0);
+        }
+    }
+
+    /// The pin in the header (and Settings): keep the island open.
+    fn toggle_pin(&mut self, i: usize) {
+        self.cfg.keep_open = !self.cfg.keep_open;
+        self.cfg.save();
+        self.push_settings();
+        if self.cfg.keep_open {
+            if self.views.get(i).is_some_and(|v| !v.expanded) {
+                self.expand(i);
+            }
+        } else {
+            for k in 0..self.views.len() {
+                if !self.cursor_over_pill(k) {
+                    self.collapse(k);
+                }
+            }
+        }
+        self.retarget();
+    }
+
+    fn unpin(&mut self) {
+        if self.cfg.keep_open {
+            self.cfg.keep_open = false;
+            self.cfg.save();
+            self.push_settings();
+        }
+    }
+
+    /// Files into the shelf (drop, "Add files…", "Paste"). Returns how many.
+    fn add_to_shelf(&mut self, files: Vec<std::path::PathBuf>) -> usize {
+        let mut added = 0;
+        for f in files {
+            if !f.exists() {
+                continue;
+            }
+            if let Some(k) = self.shelf.iter().position(|e| e.path == f) {
+                self.shelf.remove(k);
+            }
+            self.shelf.insert(0, shelf::make_entry(f)); // newest first
+            added += 1;
+        }
+        self.shelf.truncate(12);
+        self.rebuild_shelf();
+        self.retarget();
+        added
+    }
+
+    /// Stroking Mochi: a squish with each stroke, then happy eyes and a heart.
+    fn pet_stroke(&mut self) {
+        if !self.cfg.pet || !self.cfg.pet_touch || self.eating || self.carrying {
+            return;
+        }
+        let now = Instant::now();
+        if now - self.stroke_at > Duration::from_millis(1500) {
+            self.strokes = 0;
+        }
+        self.strokes += 1;
+        self.stroke_at = now;
+        self.pointer_awake = true;
+        if !self.reduce_motion() {
+            self.each(|isl| isl.global::<PetSkin>().set_squish(-0.12));
+            self.squish_timer.start(TimerMode::SingleShot, Duration::from_millis(90), || {
+                with_app(|a| a.each(|isl| isl.global::<PetSkin>().set_squish(0.0)));
+            });
+        }
+        if self.strokes >= 2 {
+            self.set_mood(pet::face::HAPPY, 2500);
+            if self.strokes % 3 == 2 {
+                self.each(|isl| isl.global::<PetSkin>().set_hearts(true));
+                self.hearts_timer.start(TimerMode::SingleShot, Duration::from_millis(1900), || {
+                    with_app(|a| a.each(|isl| isl.global::<PetSkin>().set_hearts(false)));
+                });
+            }
+        }
+        // a petted Mochi stays out a little longer
+        if let Some(i) = self.peek {
+            self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(3500), move || {
+                with_app(|a| {
+                    if a.peek == Some(i) && !a.carrying {
+                        a.duck_peek()
+                    }
+                });
+            });
+        }
+        self.update_pet_anim();
+    }
+
+    /// Mochi picked up (it hangs from the pointer, eyes wide).
+    fn pet_carry(&mut self, i: usize, x: f32, y: f32) {
+        if self.peek != Some(i) || !self.cfg.pet_touch {
+            return;
+        }
+        let Some(v) = self.views.get(i) else { return };
+        let (ww, wh) = self.win_size(v);
+        let size = pet::SIZES[self.cfg.pet_size.clamp(0, 2) as usize];
+        let isl = v.island.clone_strong();
+        if !self.carrying {
+            self.carrying = true;
+            self.peek_step.stop(); // no walking or ducking while held
+            isl.set_peek_walking(false);
+            isl.set_peek_turning(false);
+            self.set_act(pet::face::SURPRISED, true);
+            isl.global::<PetSkin>().set_jolt(0.14); // dangling: a little stretched
+        }
+        isl.set_peek_free(true);
+        isl.set_peek_fx(clamp_safe(x, size / 2.0, ww - size / 2.0));
+        isl.set_peek_fy(clamp_safe(y, size / 2.0, wh - size / 2.0));
+    }
+
+    /// Let go: Mochi lands on the nearest spot around the island with a squash.
+    fn pet_drop(&mut self, i: usize, x: f32, y: f32) {
+        if !self.carrying {
+            return;
+        }
+        self.carrying = false;
+        let Some(v) = self.views.get(i) else { return };
+        let size = pet::SIZES[self.cfg.pet_size.clamp(0, 2) as usize];
+        let (px, py, w, h) = self.pill_rect(v);
+        let r = v.r.value.min(h / 2.0);
+        let span = (w - 2.0 * r - size).max(1.0);
+        let t = ((x - px - r - size / 2.0) / span).clamp(0.0, 1.0);
+        let along = px + r + span * t + size / 2.0;
+        let mid_y = py + (h - size).max(0.0) / 2.0 + size / 2.0;
+        // the spots Mochi can sit at, as (side, center x, center y)
+        let mut spots = vec![(2, px - 0.22 * size, mid_y), (3, px + w + 0.22 * size, mid_y)];
+        match self.edge_of(v) {
+            1 => spots.push((4, along, py - 0.22 * size)),
+            4 => {
+                spots.push((1, along, py + h + 0.22 * size));
+                spots.push((4, along, py - 0.22 * size));
+            }
+            _ => spots.push((1, along, py + h + 0.22 * size)),
+        }
+        let dist = |s: &(i32, f32, f32)| (s.1 - x).powi(2) + (s.2 - y).powi(2);
+        let side = spots.iter().min_by(|a, b| dist(a).total_cmp(&dist(b))).map(|s| s.0).unwrap_or(1);
+        let isl = v.island.clone_strong();
+        isl.set_peek_glide(300);
+        isl.set_peek_landing(true);
+        isl.set_peek_turning(true);
+        isl.set_peek_side(side);
+        isl.set_peek_pos(if side == 2 || side == 3 { 0.5 } else { t });
+        isl.set_peek_out(true);
+        isl.set_peek_free(false);
+        self.set_act(-1, false);
+        // land: squash, then wobble back; happy to be put down
+        Timer::single_shot(Duration::from_millis(300), move || {
+            with_app(|a| {
+                if let Some(v) = a.views.get(i) {
+                    v.island.set_peek_turning(false);
+                    v.island.set_peek_landing(false);
+                    v.island.global::<PetSkin>().set_jolt(-0.16);
+                }
+                Timer::single_shot(Duration::from_millis(110), move || {
+                    with_app(|a| {
+                        if let Some(v) = a.views.get(i) {
+                            v.island.global::<PetSkin>().set_jolt(0.0);
+                        }
+                    });
+                });
+                a.set_mood(pet::face::HAPPY, 2000);
+            });
+        });
+        // it stays where you put it for a while, then hides
+        self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(5000), move || {
+            with_app(|a| {
+                if a.peek == Some(i) && !a.carrying {
+                    a.duck_peek()
+                }
+            });
+        });
+    }
+
+    // ---------------- tic-tac-toe ----------------
+
+    fn update_game_ui(&self) {
+        let online = self.game_mode == 1;
+        let (board, over, mine) = match (&self.game_room, online) {
+            (Some(r), true) if self.game_net == 2 => {
+                // from my side: my cells are x (1), theirs o (2)
+                let b: game::Board = std::array::from_fn(|k| match r.board[k] {
+                    0 => 0,
+                    s if s == r.seat => 1,
+                    _ => 2,
+                });
+                (b, game::outcome(&b), r.turn == r.seat)
+            }
+            _ => (self.game_board, self.game_over, !self.game_thinking),
+        };
+        let win: Vec<bool> = (0..9).map(|k| over.and_then(|o| o.1).is_some_and(|l| l.contains(&k))).collect();
+        let (status, face) = match over {
+            Some((1, _)) => ("You win", pet::face::SAD),
+            Some((2, _)) => (if online { "They win" } else { "Mochi wins" }, if online { 0 } else { pet::face::HAPPY }),
+            Some(_) => ("Draw", 0),
+            None if online && !mine => ("Their turn", 0),
+            None if self.game_thinking => ("Mochi is thinking", 0),
+            None => ("Your turn", 0),
+        };
+        let sub = if online {
+            format!("Online · room {}", self.game_room.as_ref().map(|r| r.code.as_str()).unwrap_or(""))
+        } else {
+            let (y, m, d) = self.game_score;
+            format!("You {y} · Mochi {m} · Draws {d}")
+        };
+        let btn = if !online {
+            "New game"
+        } else if over.is_some() {
+            "Play again"
+        } else {
+            "Leave"
+        };
+        let cells: Vec<i32> = board.iter().map(|&c| c as i32).collect();
+        let level = self.cfg.game_level;
+        let ok = self.cfg.games_online && !game::RELAY.is_empty();
+        self.each(|isl| {
+            isl.set_game_cells(ModelRc::new(VecModel::from(cells.clone())));
+            isl.set_game_win(ModelRc::new(VecModel::from(win.clone())));
+            isl.set_game_status(status.into());
+            isl.set_game_sub(sub.clone().into());
+            isl.set_game_btn(btn.into());
+            isl.set_game_face(face);
+            isl.set_game_thinking(self.game_thinking);
+            isl.set_game_mode(self.game_mode);
+            isl.set_game_level(level);
+            isl.set_game_net(self.game_net);
+            isl.set_game_code(self.game_code.clone().into());
+            isl.set_game_net_text(self.game_net_text.clone().into());
+            isl.set_game_online_ok(ok);
+        });
+    }
+
+    fn game_play(&mut self, k: usize) {
+        if k >= 9 {
+            return;
+        }
+        if self.game_mode == 1 {
+            if let (Some(r), Some(tx)) = (&self.game_room, &self.game_tx) {
+                if self.game_net == 2 && r.turn == r.seat && r.board[k] == 0 && game::outcome(&r.board).is_none() {
+                    let _ = tx.send(game::Cmd::Move(k));
+                }
+            }
+            return;
+        }
+        if self.game_over.is_some() || self.game_thinking || self.game_board[k] != 0 {
+            return;
+        }
+        self.game_board[k] = 1;
+        if self.game_settle() {
+            return;
+        }
+        self.game_thinking = true;
+        self.update_game_ui();
+        self.game_timer.start(TimerMode::SingleShot, Duration::from_millis(560), || {
+            with_app(|a| {
+                let level = a.cfg.game_level;
+                let board = a.game_board;
+                let mut rng = a.rng;
+                let m = game::pick(&board, level, |n| {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    (rng % n.max(1) as u64) as u32
+                });
+                a.rng = rng;
+                a.game_thinking = false;
+                if let Some(m) = m {
+                    a.game_board[m] = 2;
+                }
+                a.game_settle();
+            });
+        });
+    }
+
+    /// After a move: record a finished game. True when it's over.
+    fn game_settle(&mut self) -> bool {
+        self.game_over = game::outcome(&self.game_board);
+        match self.game_over {
+            Some((1, _)) => {
+                self.game_score.0 += 1;
+                self.set_mood(pet::face::SAD, 2500);
+            }
+            Some((2, _)) => {
+                self.game_score.1 += 1;
+                self.set_mood(pet::face::HAPPY, 2500);
+            }
+            Some(_) => self.game_score.2 += 1,
+            None => {}
+        }
+        self.update_game_ui();
+        self.game_over.is_some()
+    }
+
+    fn game_new(&mut self) {
+        if self.game_mode == 1 {
+            if let Some(tx) = &self.game_tx {
+                let over = self.game_room.as_ref().is_some_and(|r| game::outcome(&r.board).is_some());
+                let _ = tx.send(if over { game::Cmd::Again } else { game::Cmd::Leave });
+            }
+            return;
+        }
+        self.game_timer.stop();
+        self.game_board = [0; 9];
+        self.game_over = None;
+        self.game_thinking = false;
+        self.update_game_ui();
+    }
+
+    fn game_mode_set(&mut self, mode: i32) {
+        if mode == self.game_mode {
+            return;
+        }
+        if self.game_mode == 1 && self.game_room.is_some() {
+            if let Some(tx) = &self.game_tx {
+                let _ = tx.send(game::Cmd::Leave);
+            }
+        }
+        self.game_mode = mode;
+        self.game_room = None;
+        if mode == 1 {
+            (self.game_net, self.game_net_text) = if !self.cfg.games_online {
+                (4, "Online games are off. Turn them on in Settings › Modules › Games.".into())
+            } else if game::RELAY.is_empty() {
+                (4, "Online play isn't set up in this build of Islo.".into())
+            } else {
+                (0, "Play a friend anywhere: host a game and send them the code, or copy theirs and paste it here.".into())
+            };
+        }
+        self.update_game_ui();
+    }
+
+    fn game_sender(&mut self) -> Option<Sender<game::Cmd>> {
+        if self.game_tx.is_none() {
+            self.game_tx = Some(game::start(|ev| post(move |a| a.on_game(ev))));
+        }
+        self.game_tx.clone()
+    }
+
+    fn game_host(&mut self) {
+        if !self.cfg.games_online {
+            return;
+        }
+        if let Some(tx) = self.game_sender() {
+            self.game_net = 5;
+            self.game_net_text = "Making a room…".into();
+            let _ = tx.send(game::Cmd::Host);
+            self.update_game_ui();
+        }
+    }
+
+    /// "Paste a code": the island can't take typing, so the code comes from the clipboard.
+    fn game_join(&mut self) {
+        if !self.cfg.games_online {
+            return;
+        }
+        match platform::clipboard_get().as_deref().and_then(game::clean_code) {
+            Some(code) => {
+                if let Some(tx) = self.game_sender() {
+                    self.game_net = 5;
+                    self.game_net_text = format!("Joining {code}…");
+                    let _ = tx.send(game::Cmd::Join(code));
+                }
+            }
+            None => {
+                self.game_net = 4;
+                self.game_net_text = "Copy your friend's 4-letter code first, then press Paste a code.".into();
+            }
+        }
+        self.update_game_ui();
+    }
+
+    fn game_leave(&mut self) {
+        if let Some(tx) = &self.game_tx {
+            let _ = tx.send(game::Cmd::Leave);
+        }
+        self.game_room = None;
+        self.game_net = 0;
+        self.game_net_text = "Play a friend anywhere: host a game and send them the code, or copy theirs and paste it here.".into();
+        self.update_game_ui();
+    }
+
+    fn on_game(&mut self, ev: game::Event) {
+        match ev {
+            game::Event::Hosting(code) => {
+                self.game_net = 1;
+                self.game_net_text = "Send this code to a friend. Waiting for them…".into();
+                self.game_code = code;
+            }
+            game::Event::State(r) => {
+                if r.gone {
+                    self.game_net = 4;
+                    self.game_net_text = "Your friend left the game.".into();
+                    self.game_room = None;
+                } else {
+                    self.game_net = if r.players < 2 { 1 } else { 2 };
+                    if r.players < 2 {
+                        self.game_net_text = "Send this code to a friend. Waiting for them…".into();
+                    }
+                    self.game_code = r.code.clone();
+                    self.game_room = Some(r);
+                }
+            }
+            game::Event::Limit => {
+                self.game_net = 3;
+                self.game_room = None;
+                self.game_net_text = "Sorry! I'm a solo developer (with a little help from AI), and Islo is free, so online games run on a free server. Today's free limit ran out. It resets tomorrow, and Mochi's still up for a game.".into();
+            }
+            game::Event::Problem(msg) => {
+                self.game_net = 4;
+                self.game_net_text = msg;
+            }
+            game::Event::Closed => {
+                if self.game_net != 3 && self.game_net != 4 {
+                    self.game_net = 0;
+                    self.game_net_text = "Play a friend anywhere: host a game and send them the code, or copy theirs and paste it here.".into();
+                }
+                self.game_room = None;
+            }
+        }
+        if self.game_mode == 1 {
+            self.update_game_ui();
+        }
+    }
+
     fn low_battery(&self, at: u8) -> bool {
         let b = self.battery;
         self.cfg.battery && b.present && !b.plugged && b.percent <= at
@@ -822,7 +1483,7 @@ impl App {
         if self.cfg.timer && self.timer.is_some() {
             g.push(G_TIMER);
         }
-        if self.media_visible() {
+        if self.media_live() {
             g.push(G_MEDIA);
         }
         if self.charging_live() {
@@ -880,7 +1541,8 @@ impl App {
         if self.lyrics_on() && !self.lyrics_synced {
             p.push(P_LYRICS);
         }
-        if self.cfg.shelf && (!self.shelf.is_empty() || !self.cfg.media) {
+        // the shelf is always a tab away (not only while dragging a file in)
+        if self.cfg.shelf {
             p.push(P_SHELF);
         }
         if self.cfg.timer {
@@ -891,6 +1553,9 @@ impl App {
         }
         if self.cfg.pet {
             p.push(P_PET);
+        }
+        if self.cfg.games {
+            p.push(P_GAME);
         }
         if self.charging_live() || self.low_battery(20) || v.panel == P_POWER {
             p.push(P_POWER);
@@ -904,8 +1569,10 @@ impl App {
     fn panel_height(&self, v: &View) -> f32 {
         let header = if self.panels(v).len() > 1 || self.cfg.header_date { HEADER } else { 0.0 };
         let content = match v.panel {
-            P_SHELF if v.drag_over || self.shelf.is_empty() => 120.0,
+            P_SHELF if v.drag_over => 120.0,
+            P_SHELF if self.shelf.is_empty() => 164.0,
             P_SHELF => 144.0,
+            P_GAME => 204.0,
             P_POWER => 56.0,
             P_TIMER => 96.0,
             P_LYRICS => 228.0,
@@ -952,8 +1619,12 @@ impl App {
                     C_NEARBY | C_CALL | C_NOTE_NEW => (base + 60.0).clamp(260.0, COMPACT_MAX),
                     C_NOTIFY => base.max(220.0),
                     C_GLANCE => {
-                        let bell = if self.notes_on() && self.unread > 0 { 34.0 } else { 0.0 };
-                        base.max(if self.featured() == 0 { 200.0 } else { 236.0 } + bell).min(COMPACT_MAX)
+                        // featured glyph, note icons, clock/date text, battery ring
+                        let text = self.clock_text().chars().count() as f32 * 6.6;
+                        let featured = if self.featured() == 0 { 0.0 } else { 32.0 };
+                        let notes = if self.notes_on() && self.unread > 0 { 56.0 } else { 0.0 };
+                        let ring = if self.cfg.battery && self.battery.present { 30.0 } else { 0.0 };
+                        base.max(24.0 + featured + notes + text + ring + 12.0).min(COMPACT_MAX)
                     }
                     _ => base,
                 };
@@ -1009,6 +1680,9 @@ impl App {
         let featured = self.featured();
         let header_date = self.cfg.header_date;
         let focus_on = self.focus_on;
+        let header_clock = self.header_clock(&self.views[i]);
+        let panel_index = panels.iter().position(|p| *p == self.views[i].panel).unwrap_or(0) as i32;
+        let (keep_open, soft, align, touch) = (self.cfg.keep_open, self.cfg.soft_shadow, self.cfg.lyric_align, self.cfg.pet_touch && self.cfg.pet);
         let v = &mut self.views[i];
         let growing = w > v.w.target + 0.5 || h > v.h.target + 0.5;
         for s in [&mut v.w, &mut v.h, &mut v.r, &mut v.a] {
@@ -1045,6 +1719,13 @@ impl App {
         isl.set_featured(featured);
         isl.set_header_date(header_date);
         isl.set_focus_on(focus_on);
+        isl.set_header_clock(header_clock.into());
+        isl.set_panel_index(panel_index);
+        isl.set_hovering(v.hovering);
+        isl.set_keep_open(keep_open);
+        isl.set_soft_shadow(soft);
+        isl.set_lyric_align(align);
+        isl.set_pet_touch(touch);
     }
 
     /// Called every loop iteration. Returns true while springs are moving.
@@ -1149,12 +1830,15 @@ impl App {
             hover_timer: Timer::default(),
             leave_timer: Timer::default(),
             look: (0.0, 0.0),
+            scroll_hold: false,
         })
     }
 
     /// Copy all shared state into one island (used for new islands).
     fn sync_island(&self, i: usize) {
         let isl = &self.views[i].island;
+        isl.set_clock_text(self.clock_text().into());
+        isl.set_header_clock(self.header_clock(&self.views[i]).into());
         isl.set_art(self.art.clone());
         isl.set_has_art(self.media.as_ref().is_some_and(|m| m.info.art.is_some()));
         isl.set_accent(self.accent);
@@ -1422,15 +2106,16 @@ impl App {
     fn on_hover(&mut self, i: usize, h: bool) {
         let delay = self.cfg.hover_delay as u64;
         let hover_expand = self.cfg.hover_expand;
+        let keep_open = self.cfg.keep_open;
         let v = &mut self.views[i];
         v.hovering = h;
         if h {
             v.leave_timer.stop();
-            if hover_expand && !v.expanded {
+            if hover_expand && !v.expanded && !v.scroll_hold {
                 // Hover intent: open only after the pointer rests a moment.
                 v.hover_timer.start(TimerMode::SingleShot, Duration::from_millis(delay), move || {
                     with_app(|a| {
-                        if a.views.get(i).is_some_and(|v| v.hovering && !v.dragging) {
+                        if a.views.get(i).is_some_and(|v| v.hovering && !v.dragging && !v.scroll_hold) {
                             a.expand(i);
                         }
                     });
@@ -1439,7 +2124,9 @@ impl App {
         } else {
             v.hover_timer.stop();
             v.pressed = false;
-            if v.expanded {
+            v.scroll_hold = false;
+            // pinned: it stays open when the pointer leaves
+            if v.expanded && !keep_open {
                 // Short grace period so a pointer that slips past the edge for a
                 // moment doesn't snap it shut; the collapse spring then takes ~150 ms.
                 self.schedule_collapse(i, COLLAPSE_GRACE_MS);
@@ -1464,7 +2151,7 @@ impl App {
     }
 
     fn expand(&mut self, i: usize) {
-        let media_visible = self.media_visible();
+        let media_visible = self.media_live() || self.shelf.is_empty();
         let synced = self.synced_on();
         let tab = self.tab(&self.views[i]);
         let glyphs = self.glyphs();
@@ -2011,8 +2698,13 @@ impl App {
 
     fn update_notes_ui(&self) {
         let now = notify_now();
-        let items: Vec<NoteItem> = self
-            .visible_notes()
+        let icon = |n: &notify::Note| {
+            n.icon.as_ref().map(|px| {
+                slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(px, notify::ICON, notify::ICON))
+            })
+        };
+        let notes = self.visible_notes();
+        let items: Vec<NoteItem> = notes
             .iter()
             .map(|n| {
                 let mins = (now - n.time).max(0) / 600_000_000;
@@ -2022,6 +2714,7 @@ impl App {
                     60..=1439 => format!("{} h", mins / 60),
                     _ => format!("{} d", mins / 1440),
                 };
+                let img = icon(n);
                 NoteItem {
                     app: n.app.clone().into(),
                     initial: n.app.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into(),
@@ -2029,14 +2722,32 @@ impl App {
                     body: n.body.clone().into(),
                     time: time.into(),
                     call: n.is_call(),
+                    has_icon: img.is_some(),
+                    icon: img.unwrap_or_default(),
                 }
             })
             .collect();
         let count = self.unread as i32;
-        let first_app = self.visible_notes().first().map(|n| n.app.clone()).unwrap_or_default();
+        // the closed pill: icons of the newest unread apps (two different apps at most)
+        let mut seen: Vec<&str> = Vec::new();
+        let mut stack: Vec<slint::Image> = Vec::new();
+        for n in notes.iter().take(self.unread.max(0)) {
+            if stack.len() == 2 {
+                break;
+            }
+            if seen.contains(&n.app.as_str()) {
+                continue;
+            }
+            seen.push(&n.app);
+            if let Some(img) = icon(n) {
+                stack.push(img);
+            }
+        }
+        let first_app = notes.first().map(|n| n.app.clone()).unwrap_or_default();
         self.each(|isl| {
             isl.set_notes(ModelRc::new(VecModel::from(items.clone())));
             isl.set_note_count(count);
+            isl.set_note_icons(ModelRc::new(VecModel::from(stack.clone())));
             if count > 0 && self.transient != Some(C_NOTE_NEW) {
                 isl.set_note_app(first_app.clone().into());
             }
@@ -2071,6 +2782,7 @@ impl App {
             return;
         }
         if self.views[0].expanded {
+            self.unpin();
             self.collapse(0);
         } else {
             self.views[0].glyph_slot = None;
@@ -2177,7 +2889,7 @@ impl App {
     // ---------------- HUD & transient states ----------------
 
     fn show_hud(&mut self, kind: i32, value: f32, muted: bool) {
-        if !self.any_shown() || self.views.iter().all(|v| v.expanded) {
+        if !self.any_shown() {
             return;
         }
         self.hud = (kind, value, muted);
@@ -2190,11 +2902,18 @@ impl App {
             isl.set_hud_value(value);
             isl.set_hud_muted(muted);
         });
+        // open islands show a small level bar inside; closed ones become the HUD
+        for v in &self.views {
+            if v.expanded {
+                v.island.set_vol_toast(true);
+            }
+        }
         let was = self.hud_active;
         self.hud_active = true;
-        self.hud_timer.start(TimerMode::SingleShot, Duration::from_millis(1500), || {
+        self.hud_timer.start(TimerMode::SingleShot, Duration::from_millis(1200), || {
             with_app(|a| {
                 a.hud_active = false;
+                a.each(|isl| isl.set_vol_toast(false));
                 a.retarget();
             });
         });
@@ -2218,6 +2937,7 @@ impl App {
 
     fn on_media(&mut self, info: Option<media::Info>) {
         let was_playing = self.playing();
+        let had_media = self.media.is_some();
         match info {
             None => {
                 self.media = None;
@@ -2288,6 +3008,7 @@ impl App {
                 }
             }
         }
+        self.update_rest(had_media, was_playing);
         self.push_lyric_state();
         self.lyrics_sync();
         self.retarget();
@@ -2726,6 +3447,15 @@ impl App {
         s.set_pill_glance(c.pill_glance);
         s.set_header_date(c.header_date);
         s.set_featured(c.featured);
+        s.set_clock(c.clock);
+        s.set_keep_open(c.keep_open);
+        s.set_soft_shadow(c.soft_shadow);
+        s.set_media_rest(c.media_rest);
+        s.set_lyric_align(c.lyric_align);
+        s.set_pet_touch(c.pet_touch);
+        s.set_games(c.games);
+        s.set_games_online(c.games_online);
+        s.set_online_built(!game::RELAY.is_empty());
         s.set_mod_media(c.media);
         s.set_mod_lyrics(c.lyrics);
         s.set_lyric_lines(c.lyric_lines as f32);
@@ -2750,12 +3480,12 @@ impl App {
         const EYES: [u32; 7] = [0xd3b63b, 0x000000, 0xffffff, 0xfc90bc, 0xf99f55, 0x6fd087, 0x71bfff];
         s.set_pet_body_custom(!BODIES.contains(&c.pet_body));
         s.set_pet_eyes_custom(!EYES.contains(&c.pet_eyes));
-        let eyes_desc = if pet::contrast(c.pet_body, c.pet_eyes) >= 3.0 {
-            "Also its mouth while eating.".to_string()
-        } else {
-            let (_, shown, _) = pet::colors(c.pet_body, c.pet_eyes);
-            let other = if shown == 0 { "black" } else { "white" };
-            format!("Hard to see on this body, so Mochi uses {other} eyes until you pick another color.")
+        let eyes_desc = match pet::colors(c.pet_body, c.pet_eyes).3 {
+            None => "Also its mouth while eating.".to_string(),
+            Some(ring) => {
+                let other = if ring == 0 { "black" } else { "white" };
+                format!("Close to the body color, so the eyes get a thin {other} outline. Your color stays.")
+            }
         };
         s.set_pet_eyes_desc(eyes_desc.into());
         s.set_pet_size(c.pet_size);
@@ -2805,6 +3535,14 @@ impl App {
         c.pill_glance = s.get_pill_glance();
         c.header_date = s.get_header_date();
         c.featured = s.get_featured().clamp(0, 4);
+        c.clock = s.get_clock().clamp(0, 2);
+        c.keep_open = s.get_keep_open();
+        c.soft_shadow = s.get_soft_shadow();
+        c.media_rest = s.get_media_rest();
+        c.lyric_align = s.get_lyric_align().clamp(0, 2);
+        c.pet_touch = s.get_pet_touch();
+        c.games = s.get_games();
+        c.games_online = s.get_games_online();
         c.media = s.get_mod_media();
         c.lyrics = s.get_mod_lyrics();
         c.lyric_lines = s.get_lyric_lines().round() as i32;
@@ -2884,9 +3622,40 @@ impl App {
                 self.notify_ask = true;
             }
         }
+        if matches!(key, "clock" | "glance" | "hdate") {
+            self.refresh_date(); // texts now, and whether a minute tick is needed
+        }
+        if key == "rest" {
+            self.retarget();
+        }
+        if key == "pin" {
+            if self.cfg.keep_open {
+                if self.views.first().is_some_and(|v| !v.expanded) {
+                    self.expand(0);
+                }
+            } else {
+                for k in 0..self.views.len() {
+                    if !self.cursor_over_pill(k) {
+                        self.collapse(k);
+                    }
+                }
+            }
+        }
+        if (key == "games" || key == "online") && (!self.cfg.games || !self.cfg.games_online) && self.game_mode == 1 {
+            self.game_leave();
+            self.game_mode_set(0);
+        }
+        if key == "games" && !self.cfg.games {
+            for v in &mut self.views {
+                if v.panel == P_GAME {
+                    v.panel = P_MEDIA;
+                }
+            }
+        }
         self.push_lyric_state();
         self.lyrics_sync();
         self.apply_config();
+        self.update_game_ui();
     }
 
     /// Show Windows' consent prompt, then start listening.
@@ -3155,6 +3924,7 @@ impl App {
                 match wp.0 as i32 {
                     system::HOTKEY_TOGGLE => self.toggle_from_keyboard(),
                     system::HOTKEY_ESC => {
+                        self.unpin();
                         for i in 0..self.views.len() {
                             self.collapse(i);
                         }
@@ -3184,6 +3954,7 @@ impl App {
             }
             WM_SETTINGCHANGE => {
                 system::tray_refresh(platform::host_hwnd());
+                self.refresh_date(); // 12/24-hour or region format may have changed
                 let anim = system::system_animations_enabled();
                 if anim != self.sys_anim {
                     self.sys_anim = anim;
@@ -3239,11 +4010,12 @@ fn rgb_u32(c: slint::Color) -> u32 {
 
 /// Mochi's colors (any body and eye color; see pet::colors) and size.
 fn apply_skin(isl: &Island, cfg: &Config) {
-    let (head, eyes, island_head) = pet::colors(cfg.pet_body, cfg.pet_eyes);
+    let (head, eyes, island_head, ring) = pet::colors(cfg.pet_body, cfg.pet_eyes);
     let g = isl.global::<PetSkin>();
     g.set_head(rgb(head));
     g.set_eyes(rgb(eyes));
     g.set_island_head(rgb(island_head));
+    g.set_eye_ring(ring.map(rgb).unwrap_or(slint::Color::from_argb_u8(0, 0, 0, 0)));
     g.set_size(pet::SIZES[cfg.pet_size.clamp(0, 2) as usize]);
 }
 
@@ -3264,14 +4036,77 @@ fn wire_island(island: &Island, i: usize) {
     island.on_peek_poked(|| {
         with_app(|a| a.poke_peek());
     });
-    island.on_scrolled(|dy| {
+    island.on_scrolled(move |dy| {
+        with_app(|a| a.on_scroll(i, dy));
+    });
+    island.on_scrolled_x(move |dx| {
+        with_app(|a| a.on_scroll_x(i, dx));
+    });
+    island.on_tab_step(move |dir| {
+        with_app(|a| a.tab_step(i, dir));
+    });
+    island.on_swipe(move |dx, done| {
+        with_app(|a| a.on_swipe(i, dx, done));
+    });
+    island.on_toggle_pin(move || {
+        with_app(|a| a.toggle_pin(i));
+    });
+    island.on_shelf_add(|| {
+        let host = platform::host_hwnd();
+        shelf::pick_files(host, |files| {
+            post(move |a| {
+                a.add_to_shelf(files);
+            })
+        });
+    });
+    island.on_shelf_paste(|| {
         with_app(|a| {
-            if a.cfg.hud && dy != 0.0 {
-                if let Some(tx) = &a.audio_tx {
-                    let _ = tx.send(audio::Cmd::Step(if dy > 0.0 { 2.0 } else { -2.0 }));
-                }
+            let files = shelf::clipboard_files();
+            if a.add_to_shelf(files) == 0 {
+                a.each(|isl| {
+                    isl.set_error_title("Nothing to paste".into());
+                    isl.set_error_text("Copy files first".into());
+                });
+                a.show_transient(C_ERROR, 2200);
             }
         });
+    });
+    island.on_pet_stroke(|| {
+        with_app(|a| a.pet_stroke());
+    });
+    island.on_pet_carry(move |x, y| {
+        with_app(|a| a.pet_carry(i, x, y));
+    });
+    island.on_pet_drop(move |x, y| {
+        with_app(|a| a.pet_drop(i, x, y));
+    });
+    island.on_game_play(|k| {
+        with_app(|a| a.game_play(k.max(0) as usize));
+    });
+    island.on_game_new(|| {
+        with_app(|a| a.game_new());
+    });
+    island.on_game_level_set(|k| {
+        with_app(|a| {
+            a.cfg.game_level = k.clamp(0, 2);
+            a.cfg.save();
+            a.update_game_ui();
+        });
+    });
+    island.on_game_mode_set(|k| {
+        with_app(|a| a.game_mode_set(k));
+    });
+    island.on_game_host(|| {
+        with_app(|a| a.game_host());
+    });
+    island.on_game_join(|| {
+        with_app(|a| a.game_join());
+    });
+    island.on_game_copy(|| {
+        with_app(|a| platform::clipboard_set(&a.game_code));
+    });
+    island.on_game_leave(|| {
+        with_app(|a| a.game_leave());
     });
     island.on_play_pause(|| {
         with_app(|a| a.media_cmd(media::Cmd::PlayPause));
@@ -3283,20 +4118,7 @@ fn wire_island(island: &Island, i: usize) {
         with_app(|a| a.media_cmd(media::Cmd::Prev));
     });
     island.on_select_panel(move |p| {
-        with_app(|a| {
-            if let Some(v) = a.views.get_mut(i) {
-                v.panel = p;
-            }
-            if p == P_POWER {
-                a.refresh_power();
-            }
-            if p == P_NOTIF {
-                a.unread = 0;
-                a.call = None;
-                a.update_notes_ui();
-            }
-            a.retarget();
-        });
+        with_app(|a| a.open_panel(i, p));
     });
     island.on_note_open(|k| {
         with_app(|a| a.note_open(k as usize));
@@ -3513,6 +4335,29 @@ pub fn run() -> Result<(), slint::PlatformError> {
         pet_timer: Timer::default(),
         date_text: String::new(),
         date_timer: Timer::default(),
+        time_text: String::new(),
+        media_resting: false,
+        rest_timer: Timer::default(),
+        page_timer: Timer::default(),
+        xacc: 0.0,
+        xacc_at: Instant::now(),
+        xgo_at: Instant::now(),
+        strokes: 0,
+        stroke_at: Instant::now(),
+        squish_timer: Timer::default(),
+        hearts_timer: Timer::default(),
+        carrying: false,
+        game_board: [0; 9],
+        game_over: None,
+        game_thinking: false,
+        game_timer: Timer::default(),
+        game_score: (0, 0, 0),
+        game_mode: 0,
+        game_net: 0,
+        game_code: String::new(),
+        game_net_text: String::new(),
+        game_room: None,
+        game_tx: None,
         pointer_on: false,
         pointer_at: (0, 0),
         pointer_awake: false,
@@ -3579,7 +4424,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
     system::register_power_notifications(host);
     system::register_fullscreen_watch(host);
     system::tray_add(host);
-    with_app(|a| a.refresh_date());
+    with_app(|a| {
+        a.refresh_date();
+        a.update_game_ui();
+        // pinned last time: open again
+        if a.cfg.keep_open && !a.views.is_empty() {
+            a.expand(0);
+        }
+    });
 
     let media_tx = media::start(|info| post(move |a| a.on_media(info)));
     let audio_tx = audio::start(|v, muted, initial| {

@@ -51,6 +51,9 @@ jobs:
 
       - name: Build
         run: ./release.ps1
+        env:
+          # the online tic-tac-toe relay (relay/README.md); empty: no online play
+          ISLO_RELAY: ${{ vars.ISLO_RELAY }}
 
       - name: Keep the files on this run (dry runs)
         if: github.ref_type != 'tag'

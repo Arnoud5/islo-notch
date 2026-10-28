@@ -469,6 +469,15 @@ export component SettingsWindow inherits Window {
     in-out property <bool> pill-glance: true;
     in-out property <bool> header-date: true;
     in-out property <int> featured: 3; // 0 none, 1 media, 2 timer, 3 pet, 4 focus
+    in-out property <int> clock: 1;    // 0 clock, 1 clock and date, 2 date
+    in-out property <bool> keep-open: false;
+    in-out property <bool> soft-shadow: true;
+    in-out property <bool> media-rest: true;
+    in-out property <int> lyric-align: 0;
+    in-out property <bool> pet-touch: true;
+    in-out property <bool> games: true;
+    in-out property <bool> games-online: true;
+    in property <bool> online-built: false; // this build knows the relay
     // ---- modules ----
     in-out property <bool> mod-media: true;
     in-out property <bool> mod-lyrics: true;
@@ -695,14 +704,29 @@ export component SettingsWindow inherits Window {
                                 }
                             }
                         }
+                        Row {
+                            name: "Keep the island open";
+                            new-badge: true;
+                            min-h: 78px;
+                            desc: "Pinned: the island stays open on any edge, as if you never moved away. Same as the pin in the island. Esc or Win + Alt + I unpins it.";
+                            saved: root.saved-key == "pin";
+                            Toggle { y: 18px; checked <=> root.keep-open; toggled => { root.changed("pin"); } }
+                        }
+                        Row {
+                            name: "Soft shadow";
+                            new-badge: true;
+                            desc: "A soft shadow under the island so it floats a little off the desktop.";
+                            saved: root.saved-key == "shadow";
+                            Toggle { y: 18px; checked <=> root.soft-shadow; toggled => { root.changed("shadow"); } }
+                        }
                     }
                     SectionTitle { text: "At a glance"; }
                     Card {
                         Row {
                             first: true;
-                            name: "Date and battery in the pill";
+                            name: "Clock and battery in the pill";
                             min-h: 64px;
-                            desc: "When nothing is live, the small island shows a feature on the left and the date and battery on the right.";
+                            desc: "When nothing is live, the small island shows a feature on the left and the clock or date and the battery on the right.";
                             saved: root.saved-key == "glance";
                             Toggle { y: 18px; checked <=> root.pill-glance; toggled => { root.changed("glance"); } }
                         }
@@ -719,8 +743,21 @@ export component SettingsWindow inherits Window {
                             }
                         }
                         Row {
-                            name: "Date in the open island";
-                            desc: "Shows today's date next to the battery at the top of the expanded island.";
+                            name: "Show on the right";
+                            new-badge: true;
+                            min-h: 78px;
+                            desc: "For the quiet pill and the top of the open island. The time follows your Windows format.";
+                            saved: root.saved-key == "clock";
+                            Segmented {
+                                y: 12px;
+                                options: ["Clock", "Clock and date", "Date"];
+                                current <=> root.clock;
+                                selected => { root.changed("clock"); }
+                            }
+                        }
+                        Row {
+                            name: "Clock in the open island";
+                            desc: "Shows it next to the battery at the top of the expanded island.";
                             saved: root.saved-key == "hdate";
                             Toggle { y: 18px; checked <=> root.header-date; toggled => { root.changed("hdate"); } }
                         }
@@ -775,6 +812,13 @@ export component SettingsWindow inherits Window {
                             saved: root.saved-key == "media";
                             Toggle { y: 18px; checked <=> root.mod-media; toggled => { root.changed("media"); } }
                         }
+                        Row {
+                            name: "Rest after music pauses";
+                            new-badge: true;
+                            desc: root.mod-media ? "5 seconds after you pause, the pill goes back to the quiet view. Press play to bring it back." : "Turn on Media controls to change this.";
+                            saved: root.saved-key == "rest";
+                            Toggle { y: 18px; enabled: root.mod-media; checked <=> root.media-rest; toggled => { root.changed("rest"); } }
+                        }
                         if root.has-lyrics : Row {
                             glyph: Icons.note;
                             glyph-color: S.rose;
@@ -810,6 +854,19 @@ export component SettingsWindow inherits Window {
                                 }
                             }
                         }
+                        if root.has-lyrics : Row {
+                            name: "Lyrics alignment";
+                            new-badge: true;
+                            min-h: 78px;
+                            desc: root.mod-lyrics ? "Lines under the closed island and the whole song in the open one." : "Turn on Lyrics to change this.";
+                            saved: root.saved-key == "align";
+                            Segmented {
+                                y: 12px;
+                                options: ["Left", "Center", "Right"];
+                                current <=> root.lyric-align;
+                                selected => { root.changed("align"); }
+                            }
+                        }
                         Row {
                             glyph: Icons.speaker;
                             glyph-color: S.ink;
@@ -829,7 +886,7 @@ export component SettingsWindow inherits Window {
                         Row {
                             name: "File shelf";
                             new-badge: true;
-                            desc: "Drag files to the island to keep them handy.";
+                            desc: "A tab where files wait for you: drag them onto the island, add or paste them, then drag them out anywhere.";
                             saved: root.saved-key == "shelf";
                             Toggle { y: 18px; checked <=> root.mod-shelf; toggled => { root.changed("shelf"); } }
                         }
@@ -989,6 +1046,14 @@ export component SettingsWindow inherits Window {
                             Toggle { y: 18px; checked <=> root.pet-track; toggled => { root.changed("track"); } }
                         }
                         Row {
+                            name: "Pet and carry Mochi";
+                            new-badge: true;
+                            min-h: 64px;
+                            desc: "Stroke Mochi back and forth to pet it. Press and drag it to carry it around the island.";
+                            saved: root.saved-key == "touch";
+                            Toggle { y: 18px; checked <=> root.pet-touch; toggled => { root.changed("touch"); } }
+                        }
+                        Row {
                             name: "Visit friends nearby";
                             min-h: 64px;
                             desc: "Uses Bluetooth to find Islo on PCs in the same room. Any device in range can read your pet's name. Nothing goes over the internet.";
@@ -1008,6 +1073,26 @@ export component SettingsWindow inherits Window {
                                 checked <=> root.pet-share-name;
                                 toggled => { root.changed("sharename"); }
                             }
+                        }
+                    }
+
+                    SectionTitle { text: "Games"; }
+                    Card {
+                        Row {
+                            first: true;
+                            name: "Tic-tac-toe";
+                            new-badge: true;
+                            desc: "A tab with tic-tac-toe: play Mochi at Easy, Medium or Hard.";
+                            saved: root.saved-key == "games";
+                            Toggle { y: 18px; checked <=> root.games; toggled => { root.changed("games"); } }
+                        }
+                        Row {
+                            name: "Online games";
+                            min-h: 64px;
+                            desc: !root.online-built ? "This build of Islo has no game server set up."
+                                : "Play a friend anywhere with a 4-letter room code. Moves go through Islo's free relay, nothing else is stored. On busy days the free server can run out until tomorrow.";
+                            saved: root.saved-key == "online";
+                            Toggle { y: 18px; enabled: root.games && root.online-built; checked <=> root.games-online; toggled => { root.changed("online"); } }
                         }
                     }
 
