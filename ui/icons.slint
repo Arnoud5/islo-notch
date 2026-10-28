@@ -76,9 +76,16 @@ export component BrandMark inherits Rectangle {
 }
 
 /// Mochi, the Islo mascot and pet: the brand's small drawing (chunkier ears,
-/// bigger eyes, no shoulders). Colors come from a skin so they can be customized.
+/// bigger eyes, no shoulders). Colors come from Settings so they can be anything.
 /// `orient`: 0 upright, 1 upside down (hanging below an edge), 2 ears to the left,
 /// 3 ears to the right (peeking around a side). `look-x/y` (-1..1) move the eyes.
+///
+/// Moods (`face`, same numbers as pet::face): 0 neutral, 1 happy, 2 sad, 3 angry,
+/// 4 surprised, 5 scared, 6 disgusted, 7 love, 8 excited, 9 shy, 10 confused,
+/// 11 sleepy (also chewing), 12 bored, 13 squeezed shut (><). Mochi has no mouth,
+/// so a mood is its eyes, one small mark beside it and how its body moves.
+/// `lively` plays that motion and the marks; it ticks every frame, so it's only
+/// on while a mood is fresh. Faces are drawn upright on screen in every `orient`.
 export component Mochi inherits Rectangle {
     in property <brush> head: #000000;
     in property <brush> eyes: #d3b63b;
@@ -87,48 +94,273 @@ export component Mochi inherits Rectangle {
     in property <float> look-y: 0;
     in property <float> blink: 0; // 0 open .. 1 shut
     in property <int> orient: 0;
+    in property <int> face: 0;
+    in property <float> mouth: 0;      // 0 none .. 1 wide open (eating)
+    in property <bool> lively: false;
+    in property <float> stretch: 1;    // >1 pulled away from where it sits or hangs, <1 squashed
+    in property <bool> crumbs: false;  // chomping
+    in property <bool> hearts: false;  // a heart floats up (love, or a treat it liked)
     width: 20px;
     height: 20px;
     // px per drawing unit (the artboard is 56 units, starting at 4)
     property <length> u: self.width / 56;
-    property <length> er: 4.6 * u;              // eye radius
-    property <length> reach: 3.4 * u;           // how far the eyes can look
+    property <int> f: root.awake ? root.face : 0;
+    property <float> t: root.lively ? animation-tick() / 1ms : 0;
     // eye centers per orientation, in drawing units
     property <float> e1x: orient == 0 || orient == 1 ? 24.5 : orient == 2 ? 37 : 27;
     property <float> e1y: orient == 0 ? 37 : orient == 1 ? 27 : orient == 2 ? 39.5 : 24.5;
     property <float> e2x: orient == 0 || orient == 1 ? 39.5 : orient == 2 ? 37 : 27;
     property <float> e2y: orient == 0 ? 37 : orient == 1 ? 27 : orient == 2 ? 24.5 : 39.5;
-    property <length> lx: clamp(look-x, -1, 1) * reach;
-    property <length> ly: clamp(look-y, -1, 1) * reach;
-    Path {
-        width: parent.width;
-        height: parent.height;
-        viewbox-x: 4;
-        viewbox-y: 4;
-        viewbox-width: 56;
-        viewbox-height: 56;
-        fill: root.head;
-        commands: root.orient == 1 ? "M10 40L15 40L20 54Q21.5 56.5 23 54L28.5 45L35.5 45L41 54Q42.5 56.5 44 54L49 40L54 40L54 28A15 15 0 0 0 39 13L25 13A15 15 0 0 0 10 28Z"
-            : root.orient == 2 ? "M24 54L24 49L10 44Q7.5 42.5 10 41L19 35.5L19 28.5L10 23Q7.5 21.5 10 20L24 15L24 10L36 10A15 15 0 0 1 51 25L51 39A15 15 0 0 1 36 54Z"
-            : root.orient == 3 ? "M40 10L40 15L54 20Q56.5 21.5 54 23L45 28.5L45 35.5L54 41Q56.5 42.5 54 44L40 49L40 54L28 54A15 15 0 0 1 13 39L13 25A15 15 0 0 1 28 10Z"
-            : "M10 24L15 24L20 10Q21.5 7.5 23 10L28.5 19L35.5 19L41 10Q42.5 7.5 44 10L49 24L54 24L54 36A15 15 0 0 1 39 51L25 51A15 15 0 0 1 10 36Z";
+    property <bool> upright: orient == 0 || orient == 1;
+
+    // The mood's motion, in drawing units: `lift` away from where Mochi sits or
+    // hangs, `side` along it, `squash` > 1 wider and shorter.
+    property <float> lift: !root.lively ? 0
+        : f == 1 ? abs(sin(t * 0.18deg)) * 5
+        : f == 2 ? -(sin(t * 0.1125deg) + 1) * 0.6
+        : f == 4 ? (mod(t, 1800) < 720 ? sin(mod(t, 1800) * 0.25deg) * 7 : 0)
+        : f == 8 ? abs(sin(t * 0.33deg)) * 6
+        : 0;
+    property <float> side: !root.lively ? 0
+        : f == 3 ? sin(t * 1.6deg) * 1.4
+        : f == 5 ? sin(t * 5deg) * 0.6
+        : f == 6 ? -(1 - cos(t * 0.1286deg))
+        : f == 7 ? sin(t * 0.18deg) * 1.5
+        : f == 9 ? sin(t * 0.225deg)
+        : f == 10 ? (1 - cos(t * 0.1385deg)) * 0.75
+        : 0;
+    property <float> squash: f == 3 || f == 9 ? 1.03
+        : !root.lively ? 1
+        : f == 1 ? 1 + 0.05 * (1 - abs(sin(t * 0.18deg)))
+        : f == 2 ? 1 + 0.01 * (sin(t * 0.1125deg) + 1)
+        : f == 11 ? 1 - 0.015 * (sin(t * 0.106deg) + 1)
+        : f == 12 ? 1 + 0.015 * (sin(t * 0.08deg) + 1)
+        : 1;
+    property <float> shrink: f == 5 ? 0.88 : 1;
+    property <float> along: root.stretch * (2 - root.squash) * shrink;
+    property <float> across: (2 - root.stretch) * root.squash * shrink;
+    property <float> glance: f == 12 && root.lively ? sin(t * 0.08deg) * 2.5 : 0;
+
+    // ---- eye shapes, around an eye center (x, y) in drawing units ----
+    pure function circle(x: float, y: float, r: float) -> string {
+        "M \{x - r} \{y} A \{r} \{r} 0 1 0 \{x + r} \{y} A \{r} \{r} 0 1 0 \{x - r} \{y} Z "
     }
-    // Eyes: open circles that follow the pointer; asleep they become soft lids.
-    property <length> eh: root.awake ? max(1.2px, 2 * er * (1 - 0.85 * clamp(blink, 0, 1))) : max(1.2px, er * 0.42);
-    Rectangle {
-        x: (root.e1x - 4) * u - er + (root.awake ? lx : 0);
-        y: (root.e1y - 4) * u - eh / 2 + (root.awake ? ly : er * 0.3);
-        width: 2 * er;
-        height: eh;
-        border-radius: min(er, eh / 2);
-        background: root.eyes;
+    // lids: a slanted top and a round bottom (left eye; `flip` for the right one)
+    pure function lid(x: float, y: float, outer: float, inner: float, flip: bool) -> string {
+        flip ? "M \{x + 4.6} \{y + outer} L \{x - 4.6} \{y + inner} A 4.8 4.8 0 0 0 \{x + 4.6} \{y + outer} Z "
+            : "M \{x - 4.6} \{y + outer} L \{x + 4.6} \{y + inner} A 4.8 4.8 0 0 1 \{x - 4.6} \{y + outer} Z "
     }
-    Rectangle {
-        x: (root.e2x - 4) * u - er + (root.awake ? lx : 0);
-        y: (root.e2y - 4) * u - eh / 2 + (root.awake ? ly : er * 0.3);
-        width: 2 * er;
-        height: eh;
-        border-radius: min(er, eh / 2);
-        background: root.eyes;
+    pure function half(x: float, y: float) -> string {
+        "M \{x - 4.6} \{y} L \{x + 4.6} \{y} A 4.6 4.6 0 0 1 \{x - 4.6} \{y} Z "
+    }
+    pure function heart(x: float, y: float) -> string {
+        "M \{x} \{y + 4} C \{x - 1.4} \{y + 1.6} \{x - 6} \{y + 1.2} \{x - 6} \{y - 2.2} C \{x - 6} \{y - 4.8} \{x - 2.9} \{y - 6} \{x} \{y - 3.2} C \{x + 2.9} \{y - 6} \{x + 6} \{y - 4.8} \{x + 6} \{y - 2.2} C \{x + 6} \{y + 1.2} \{x + 1.4} \{y + 1.6} \{x} \{y + 4} Z "
+    }
+    pure function star(x: float, y: float, r: float) -> string {
+        "M \{x} \{y - r} Q \{x + r / 6} \{y - r / 6} \{x + r} \{y} Q \{x + r / 6} \{y + r / 6} \{x} \{y + r} Q \{x - r / 6} \{y + r / 6} \{x - r} \{y} Q \{x - r / 6} \{y - r / 6} \{x} \{y - r} Z "
+    }
+    pure function arc(x: float, y: float, bend: float) -> string {
+        "M \{x - 4} \{y} Q \{x} \{y + bend} \{x + 4} \{y} "
+    }
+    pure function drop(x: float, y: float, r: float) -> string {
+        "M \{x} \{y - 1.4 * r} C \{x + 0.7 * r} \{y - 0.4 * r} \{x + r} \{y + 0.2 * r} \{x + r} \{y + 0.6 * r} A \{r} \{r} 0 0 1 \{x - r} \{y + 0.6 * r} C \{x - r} \{y + 0.2 * r} \{x - 0.7 * r} \{y - 0.4 * r} \{x} \{y - 1.4 * r} Z "
+    }
+    property <string> fill-cmd: f == 2 ? lid(e1x, e1y, 0.6, -1.4, false) + lid(e2x, e2y, 0.6, -1.4, true)
+        : f == 3 ? lid(e1x, e1y, -2.2, 1.4, false) + lid(e2x, e2y, -2.2, 1.4, true)
+        : f == 4 ? circle(e1x, e1y - 1.5, 6) + circle(e2x, e2y - 1.5, 6)
+        : f == 5 ? circle(e1x, e1y + 0.5, 2.8) + circle(e2x, e2y + 0.5, 2.8)
+        : f == 6 ? half(e2x, e2y - 0.8)
+        : f == 7 ? heart(e1x, e1y) + heart(e2x, e2y)
+        : f == 8 ? star(e1x, e1y, 6) + star(e2x, e2y, 6)
+        : f == 9 ? circle(e1x + 1, e1y + 2.6, 3.8) + circle(e2x - 1, e2y + 2.6, 3.8)
+        : f == 10 ? circle(e1x, e1y - 0.6, 5.4) + circle(e2x, e2y + 0.8, 3)
+        : f == 12 ? half(e1x + glance, e1y) + half(e2x + glance, e2y)
+        : "";
+    property <string> line-cmd: f == 1 ? arc(e1x, e1y + 1.6, -6.2) + arc(e2x, e2y + 1.6, -6.2)
+        : f == 6 ? "M \{e1x - 4.1} \{e1y} L \{e1x + 4.1} \{e1y} "
+        : f == 11 ? arc(e1x, e1y + 0.4, 3.2) + arc(e2x, e2y + 0.4, 3.2)
+        : f == 13 ? "M \{e1x - 3} \{e1y - 3} L \{e1x + 3} \{e1y} L \{e1x - 3} \{e1y + 3} M \{e2x + 3} \{e2y - 3} L \{e2x - 3} \{e2y} L \{e2x + 3} \{e2y + 3} "
+        : "";
+
+    body := Rectangle {
+        property <length> ux: self.width / 56;
+        property <length> uy: self.height / 56;
+        width: root.width * (root.upright ? root.across : root.along);
+        height: root.height * (root.upright ? root.along : root.across);
+        x: root.upright ? (root.width - self.width) / 2 + root.side * root.u
+            : root.orient == 2 ? root.width - self.width - root.lift * root.u
+            : root.lift * root.u;
+        y: root.orient == 0 ? root.height - self.height - root.lift * root.u
+            : root.orient == 1 ? root.lift * root.u
+            : (root.height - self.height) / 2 + root.side * root.u;
+        Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 4;
+            viewbox-y: 4;
+            viewbox-width: 56;
+            viewbox-height: 56;
+            fill: root.head;
+            commands: root.orient == 1 ? "M10 40L15 40L20 54Q21.5 56.5 23 54L28.5 45L35.5 45L41 54Q42.5 56.5 44 54L49 40L54 40L54 28A15 15 0 0 0 39 13L25 13A15 15 0 0 0 10 28Z"
+                : root.orient == 2 ? "M24 54L24 49L10 44Q7.5 42.5 10 41L19 35.5L19 28.5L10 23Q7.5 21.5 10 20L24 15L24 10L36 10A15 15 0 0 1 51 25L51 39A15 15 0 0 1 36 54Z"
+                : root.orient == 3 ? "M40 10L40 15L54 20Q56.5 21.5 54 23L45 28.5L45 35.5L54 41Q56.5 42.5 54 44L40 49L40 54L28 54A15 15 0 0 1 13 39L13 25A15 15 0 0 1 28 10Z"
+                : "M10 24L15 24L20 10Q21.5 7.5 23 10L28.5 19L35.5 19L41 10Q42.5 7.5 44 10L49 24L54 24L54 36A15 15 0 0 1 39 51L25 51A15 15 0 0 1 10 36Z";
+        }
+        // Neutral eyes: open circles that follow the pointer; asleep they become soft lids.
+        property <length> erx: 4.6 * self.ux;
+        property <length> ery: 4.6 * self.uy;
+        property <length> eh: root.awake ? max(1.2px, 2 * ery * (1 - 0.85 * clamp(root.blink, 0, 1))) : max(1.2px, ery * 0.42);
+        property <length> lx: clamp(root.look-x, -1, 1) * 3.4 * self.ux;
+        property <length> ly: clamp(root.look-y, -1, 1) * 3.4 * self.uy;
+        if root.f == 0 : Rectangle {
+            x: (root.e1x - 4) * body.ux - body.erx + (root.awake ? body.lx : 0);
+            y: (root.e1y - 4) * body.uy - body.eh / 2 + (root.awake ? body.ly : body.ery * 0.3);
+            width: 2 * body.erx;
+            height: body.eh;
+            border-radius: min(body.erx, body.eh / 2);
+            background: root.eyes;
+        }
+        if root.f == 0 : Rectangle {
+            x: (root.e2x - 4) * body.ux - body.erx + (root.awake ? body.lx : 0);
+            y: (root.e2y - 4) * body.uy - body.eh / 2 + (root.awake ? body.ly : body.ery * 0.3);
+            width: 2 * body.erx;
+            height: body.eh;
+            border-radius: min(body.erx, body.eh / 2);
+            background: root.eyes;
+        }
+        // Mood eyes
+        if root.fill-cmd != "" : Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 4;
+            viewbox-y: 4;
+            viewbox-width: 56;
+            viewbox-height: 56;
+            fill: root.eyes;
+            commands: root.fill-cmd;
+        }
+        if root.line-cmd != "" : Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: 4;
+            viewbox-y: 4;
+            viewbox-width: 56;
+            viewbox-height: 56;
+            fill: transparent;
+            stroke: root.eyes;
+            stroke-width: max(1px, 2.6 * min(body.ux, body.uy));
+            stroke-line-cap: round;
+            stroke-line-join: round;
+            commands: root.line-cmd;
+        }
+        // Shy: a blush under each eye
+        if root.f == 9 : Rectangle {
+            x: (root.e1x - 4 - 6.9 - 3.2) * body.ux;
+            y: (root.e1y - 4 + 7.6 - 1.6) * body.uy;
+            width: 6.4 * body.ux;
+            height: 3.2 * body.uy;
+            border-radius: self.height / 2;
+            background: #fc90bc;
+        }
+        if root.f == 9 : Rectangle {
+            x: (root.e2x - 4 + 6.9 - 3.2) * body.ux;
+            y: (root.e2y - 4 + 7.6 - 1.6) * body.uy;
+            width: 6.4 * body.ux;
+            height: 3.2 * body.uy;
+            border-radius: self.height / 2;
+            background: #fc90bc;
+        }
+        // Mouth: only while eating, or a small "o" when surprised. In the eye
+        // color, below the eyes (toward the chin, whichever way Mochi faces).
+        property <float> open: root.f == 4 ? 0.65 : root.mouth;
+        property <float> mx: root.orient == 2 ? 45.5 : root.orient == 3 ? 18.5 : 32;
+        property <float> my: root.orient == 0 ? 45.5 : root.orient == 1 ? 18.5 : 32;
+        property <float> wide: root.f == 4 ? 4 : 6;
+        property <float> tall: max(0.8, 7.2 * self.open);
+        if body.open > 0.02 : Rectangle {
+            width: (root.upright ? body.wide : body.tall) * body.ux;
+            height: (root.upright ? body.tall : body.wide) * body.uy;
+            x: (body.mx - 4) * body.ux - self.width / 2;
+            y: (body.my - 4) * body.uy - self.height / 2;
+            border-radius: min(self.width, self.height) / 2;
+            background: root.eyes;
+        }
+    }
+
+    // ---- marks beside Mochi (only while the mood is fresh) ----
+    // A layer 1.5x Mochi's size, in the same drawing units (-10..74).
+    property <float> ax: orient == 1 ? 59 : orient == 2 ? 9 : orient == 3 ? 55 : 57;
+    property <float> ay: orient == 1 ? 50 : 9;
+    property <float> p2400: mod(t, 2400) / 2400;
+    property <float> p2000: mod(t, 2000) / 2000;
+    property <float> p600: mod(t, 600) / 600;
+    property <string> under-cmd: !root.lively ? ""
+        : f == 3 ? "M \{ax - 3} \{ay - 2} Q \{ax - 1} \{ay} \{ax - 3} \{ay + 2} M \{ax + 3} \{ay - 2} Q \{ax + 1} \{ay} \{ax + 3} \{ay + 2} M \{ax - 2} \{ay - 3} Q \{ax} \{ay - 1} \{ax + 2} \{ay - 3} M \{ax - 2} \{ay + 3} Q \{ax} \{ay + 1} \{ax + 2} \{ay + 3} "
+        : f == 4 ? "M \{ax} \{ay - 6} L \{ax} \{ay + 1} M \{ax} \{ay + 5} L \{ax} \{ay + 5.01} "
+        : f == 10 ? "M \{ax - 3} \{ay - 4 - lift * 0.3} Q \{ax - 3} \{ay - 7.5} \{ax} \{ay - 7.5} Q \{ax + 3.5} \{ay - 7.5} \{ax + 3.5} \{ay - 4.3} Q \{ax + 3.5} \{ay - 2} \{ax} \{ay - 0.9} L \{ax} \{ay + 1} M \{ax} \{ay + 4.6} L \{ax} \{ay + 4.61} "
+        : f == 11 ? "M \{ax - 2.5 + p2400 * 4} \{ay + 2 - p2400 * 9} L \{ax + 2.5 + p2400 * 4} \{ay + 2 - p2400 * 9} L \{ax - 2.5 + p2400 * 4} \{ay + 7 - p2400 * 9} L \{ax + 2.5 + p2400 * 4} \{ay + 7 - p2400 * 9} "
+        : f == 12 ? "M \{ax - 5} \{ay} L \{ax - 5} \{ay + 0.01} M \{ax} \{ay} L \{ax} \{ay + 0.01} M \{ax + 5} \{ay} L \{ax + 5} \{ay + 0.01} "
+        : "";
+    property <brush> mark-ink: f == 3 ? #f4514f : #f5f5f5;
+    property <string> blob-cmd: !root.lively ? ""
+        : f == 2 ? drop(e1x - 2, e1y + 7 + p2400 * 12, 2.2)
+        : f == 5 ? drop(ax, ay + 8 + abs(sin(t * 0.15deg)) * 1.5, 2.6)
+        : f == 7 || root.hearts ? heart(ax, ay + 4 - p2000 * 12)
+        : f == 8 ? star(ax, ay, 4 * (0.4 + 0.6 * abs(sin(t * 0.18deg)))) + star(ax - 7, ay + 12, 3 * (0.4 + 0.6 * abs(cos(t * 0.18deg))))
+        : root.crumbs ? circle(body.mx - 5 - p600 * 5, body.my + 2 + p600 * 9, 1.2) + circle(body.mx + 5 + p600 * 5, body.my + 1 + p600 * 8, 1.1)
+        : "";
+    property <brush> blob-fill: f == 2 || f == 5 ? #71bfff : f == 8 ? #d3b63b : root.crumbs && f != 7 && !root.hearts ? #f99f55 : #fc90bc;
+    property <float> blob-fade: f == 2 ? min(1, min(p2400 / 0.15, (1 - p2400) / 0.2))
+        : f == 7 || root.hearts ? min(1, min(p2000 / 0.2, (1 - p2000) / 0.35))
+        : 1;
+    if root.under-cmd != "" || root.blob-cmd != "" : Rectangle {
+        x: -root.width / 4;
+        y: -root.height / 4;
+        width: root.width * 1.5;
+        height: root.height * 1.5;
+        // line marks: a dark outline under a light stroke, so they read on any wallpaper
+        if root.under-cmd != "" : Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: -10;
+            viewbox-y: -10;
+            viewbox-width: 84;
+            viewbox-height: 84;
+            fill: transparent;
+            stroke: #000000;
+            stroke-width: max(2px, 4 * root.u);
+            stroke-line-cap: round;
+            stroke-line-join: round;
+            opacity: root.f == 3 ? 0.6 + 0.4 * abs(sin(root.t * 0.2deg)) : 1;
+            commands: root.under-cmd;
+        }
+        if root.under-cmd != "" : Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: -10;
+            viewbox-y: -10;
+            viewbox-width: 84;
+            viewbox-height: 84;
+            fill: transparent;
+            stroke: root.mark-ink;
+            stroke-width: max(1px, 2.2 * root.u);
+            stroke-line-cap: round;
+            stroke-line-join: round;
+            opacity: root.f == 3 ? 0.6 + 0.4 * abs(sin(root.t * 0.2deg)) : 1;
+            commands: root.under-cmd;
+        }
+        if root.blob-cmd != "" : Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-x: -10;
+            viewbox-y: -10;
+            viewbox-width: 84;
+            viewbox-height: 84;
+            fill: root.blob-fill;
+            stroke: #000000;
+            stroke-width: max(0.8px, 0.9 * root.u);
+            opacity: max(0, root.blob-fade);
+            commands: root.blob-cmd;
+        }
     }
 }

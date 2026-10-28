@@ -15,6 +15,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
 use windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
@@ -28,6 +29,21 @@ pub const READY_ARG: &str = "--notifications-ready";
 pub const REMOVE_FAILED_ARG: &str = "--notifications-remove-failed";
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A Windows tool by its full path in System32, so a same-named file next to
+/// Islo.exe (or anywhere on PATH) is never started instead.
+fn system_tool(rel: &str) -> PathBuf {
+    let mut buf = [0u16; 260];
+    let n = unsafe { GetSystemDirectoryW(Some(&mut buf)) } as usize;
+    let dir = if n > 0 && n < buf.len() { String::from_utf16_lossy(&buf[..n]) } else { r"C:\Windows\System32".into() };
+    PathBuf::from(dir).join(rel)
+}
+
+fn powershell() -> std::process::Command {
+    let mut c = std::process::Command::new(system_tool(r"WindowsPowerShell\v1.0\powershell.exe"));
+    c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]).creation_flags(CREATE_NO_WINDOW);
+    c
+}
 
 pub fn developer_mode() -> bool {
     crate::system::reg_dword(
@@ -66,12 +82,13 @@ fn enable_developer_mode() -> Result<(), String> {
     let params = crate::system::wide(
         "add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f",
     );
+    let reg = crate::system::wide(&system_tool("reg.exe").to_string_lossy());
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
         hwnd: HWND::default(),
         lpVerb: w!("runas"),
-        lpFile: w!("reg.exe"),
+        lpFile: PCWSTR(reg.as_ptr()),
         lpParameters: PCWSTR(params.as_ptr()),
         nShow: SW_HIDE.0,
         ..Default::default()
@@ -110,9 +127,19 @@ fn write_files(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A path as a single-quoted PowerShell string: a ' inside is written as ''.
+/// A path as a single-quoted PowerShell string. PowerShell also ends such a
+/// string at the curly quotes ‘ ’ ‚ ‛ (C:\Users\O’Brien), so each quote
+/// character inside is doubled, which PowerShell reads as one literal quote.
 fn quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', "''"))
+    let mut out = String::from("'");
+    for c in p.to_string_lossy().chars() {
+        if matches!(c, '\'' | '\u{2018}'..='\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 fn register(manifest: &Path, dir: &Path) -> Result<(), String> {
@@ -123,11 +150,7 @@ fn register(manifest: &Path, dir: &Path) -> Result<(), String> {
         quote(manifest),
         quote(dir)
     );
-    let out = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|_| "Couldn't start PowerShell to register Islo.".to_string())?;
+    let out = powershell().arg(&script).output().map_err(|_| "Couldn't start PowerShell to register Islo.".to_string())?;
     if out.status.success() {
         return Ok(());
     }
@@ -149,6 +172,29 @@ mod tests {
             assert!(dir.join("Assets").join(logo).exists(), "Assets\\{logo}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quotes_any_quote_in_a_path() {
+        use std::path::Path;
+        assert_eq!(super::quote(Path::new(r"C:\Users\O'Brien")), r"'C:\Users\O''Brien'");
+        assert_eq!(super::quote(Path::new("C:\\Users\\O\u{2019}Brien")), "'C:\\Users\\O\u{2019}\u{2019}Brien'");
+        assert_eq!(super::quote(Path::new("\u{2018}\u{201A}\u{201B}")), "'\u{2018}\u{2018}\u{201A}\u{201A}\u{201B}\u{201B}'");
+    }
+
+    #[test]
+    fn helpers_start_from_system32() {
+        let ps = super::system_tool(r"WindowsPowerShell\v1.0\powershell.exe");
+        assert!(ps.is_absolute() && ps.exists(), "{}", ps.display());
+        assert!(super::system_tool("reg.exe").exists());
+    }
+
+    #[test]
+    #[ignore] // starts PowerShell: cargo test package -- --ignored
+    fn powershell_reads_a_curly_quoted_path_back() {
+        let p = std::path::Path::new("C:\\Users\\O\u{2019}Brien 'x' \u{2018}y\u{201B}");
+        let out = super::powershell().arg(format!("[Console]::OutputEncoding = [Text.Encoding]::UTF8; Write-Output {}", super::quote(p))).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), p.to_str().unwrap());
     }
 }
 
@@ -175,9 +221,5 @@ pub fn remove_and_relaunch() -> bool {
         failed = REMOVE_FAILED_ARG,
         exe = quote(&exe),
     );
-    std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .is_ok()
+    powershell().arg(&script).spawn().is_ok()
 }

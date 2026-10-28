@@ -243,6 +243,62 @@ component SkinPicker inherits HorizontalLayout {
     }
 }
 
+/// Color dots plus "Custom…", which opens Windows' color picker (any color).
+/// A picked color that isn't one of the dots shows as an extra, selected dot.
+component ColorPicker inherits HorizontalLayout {
+    in property <[color]> colors;
+    in property <color> current;
+    in property <bool> custom-active; // `current` isn't one of `colors`
+    callback picked(color);
+    callback custom();
+    spacing: 8px;
+    alignment: end;
+    for c in root.colors : Rectangle {
+        width: 32px;
+        height: 32px;
+        Rectangle {
+            visible: root.current == c && !root.custom-active;
+            border-radius: 16px;
+            border-width: 2px;
+            border-color: S.primary;
+        }
+        Rectangle {
+            x: 5px;
+            y: 5px;
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            background: c;
+            border-width: 1px;
+            border-color: dot-ta.has-hover ? S.ink : S.border;
+        }
+        dot-ta := TouchArea {
+            clicked => { root.picked(c); }
+        }
+    }
+    if root.custom-active : Rectangle {
+        width: 32px;
+        height: 32px;
+        border-radius: 16px;
+        border-width: 2px;
+        border-color: S.primary;
+        Rectangle {
+            x: 5px;
+            y: 5px;
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            background: root.current;
+            border-width: 1px;
+            border-color: S.border;
+        }
+    }
+    Button {
+        text: "Custom…";
+        clicked => { root.custom(); }
+    }
+}
+
 component Badge inherits Rectangle {
     in property <string> text: "New";
     height: 20px;
@@ -429,10 +485,17 @@ export component SettingsWindow inherits Window {
     in-out property <bool> mod-focus: true;
     in-out property <bool> mod-pet: true;
     in-out property <bool> pet-nearby: true;
+    in-out property <bool> pet-share-name: false;
+    in property <string> owner-name: "";    // first name of the Windows user
     in-out property <bool> pet-peek: true;
     in-out property <bool> pet-track: true;
     in-out property <string> pet-name: "Mochi";
-    in-out property <int> pet-skin: 0;
+    in-out property <int> pet-skin: 0;  // preset, -1 custom colors
+    in property <color> pet-body: #000000;
+    in property <color> pet-eyes: #d3b63b;
+    in property <bool> pet-body-custom: false; // not one of the dots
+    in property <bool> pet-eyes-custom: false;
+    in property <string> pet-eyes-desc: "";
     in-out property <int> pet-size: 1;  // 0 small, 1 medium, 2 large
     in-out property <int> pet-moves: 2; // 0 peek, 1 walk around, 2 both
     in-out property <int> pet-often: 1; // 0 rarely, 1 sometimes, 2 often
@@ -461,6 +524,8 @@ export component SettingsWindow inherits Window {
     callback open-releases();
     callback set-up-notifications();
     callback remove-notifications();
+    callback set-pet-color(int, color); // 0 body, 1 eyes
+    callback pick-pet-color(int);       // Windows' color picker for body (0) or eyes (1)
 
     HorizontalLayout {
         // ---------- sidebar ----------
@@ -839,12 +904,40 @@ export component SettingsWindow inherits Window {
                         Row {
                             name: "Look";
                             min-h: 64px;
-                            desc: "Mochi's colors, in the island and when it comes out.";
+                            desc: "Start from a preset, then change either color below.";
                             saved: root.saved-key == "skin";
                             SkinPicker {
                                 y: 10px;
                                 current <=> root.pet-skin;
                                 selected => { root.changed("skin"); }
+                            }
+                        }
+                        Row {
+                            name: "Body color";
+                            min-h: 64px;
+                            desc: "Mochi's head, ears and all.";
+                            saved: root.saved-key == "petbody";
+                            ColorPicker {
+                                y: 12px;
+                                colors: [#000000, #3a3a3a, #f5f5f5, #fc90bc, #f99f55, #d3b63b, #6fd087, #71bfff];
+                                current: root.pet-body;
+                                custom-active: root.pet-body-custom;
+                                picked(c) => { root.set-pet-color(0, c); }
+                                custom => { root.pick-pet-color(0); }
+                            }
+                        }
+                        Row {
+                            name: "Eye color";
+                            min-h: 64px;
+                            desc: root.pet-eyes-desc;
+                            saved: root.saved-key == "peteyes";
+                            ColorPicker {
+                                y: 12px;
+                                colors: [#d3b63b, #000000, #ffffff, #fc90bc, #f99f55, #6fd087, #71bfff];
+                                current: root.pet-eyes;
+                                custom-active: root.pet-eyes-custom;
+                                picked(c) => { root.set-pet-color(1, c); }
+                                custom => { root.pick-pet-color(1); }
                             }
                         }
                         Row {
@@ -861,7 +954,7 @@ export component SettingsWindow inherits Window {
                         Row {
                             name: "Come out of the island";
                             min-h: 78px;
-                            desc: root.reduce-motion || root.system-reduce-motion ? "Off while Reduce animations is on." : "Now and then, unless you're hovering or something urgent is showing, Mochi peeks out or walks around the island, music playing or not. Click Mochi and it hides.";
+                            desc: root.reduce-motion || root.system-reduce-motion ? "Off while Reduce animations is on." : "Now and then, unless something urgent is showing, Mochi peeks out or walks around the island. It keeps going while you hover, and gets dragged along when the island opens. Click Mochi and it hides.";
                             saved: root.saved-key == "peek";
                             Toggle { y: 18px; checked <=> root.pet-peek; toggled => { root.changed("peek"); } }
                         }
@@ -897,9 +990,24 @@ export component SettingsWindow inherits Window {
                         }
                         Row {
                             name: "Visit friends nearby";
-                            desc: "Uses Bluetooth to find Islo on PCs in the same room. Nothing goes over the internet.";
+                            min-h: 64px;
+                            desc: "Uses Bluetooth to find Islo on PCs in the same room. Any device in range can read your pet's name. Nothing goes over the internet.";
                             saved: root.saved-key == "nearby";
                             Toggle { y: 18px; checked <=> root.pet-nearby; toggled => { root.changed("nearby"); } }
+                        }
+                        Row {
+                            name: "Show my name";
+                            min-h: 64px;
+                            desc: root.pet-share-name
+                                ? "Friends see “" + root.owner-name + "'s laptop”. Any device in Bluetooth range can read this name."
+                                : "Friends see “A friend's laptop”. Turn on to show your first name, " + root.owner-name + ", instead.";
+                            saved: root.saved-key == "sharename";
+                            Toggle {
+                                y: 18px;
+                                enabled: root.pet-nearby;
+                                checked <=> root.pet-share-name;
+                                toggled => { root.changed("sharename"); }
+                            }
                         }
                     }
 

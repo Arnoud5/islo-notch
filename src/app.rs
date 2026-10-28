@@ -232,6 +232,7 @@ struct App {
 
     // ---- pet ----
     owner: String,
+    beacon_id: [u8; 3], // new every run (pet::session_id)
     ble_tx: Option<Sender<pet::Cmd>>,
     ble_ok: bool,
     peers: Vec<pet::Peer>,
@@ -262,6 +263,18 @@ struct App {
     pet_bob: bool,
     visit_timer: Timer,
     home_timer: Timer,
+    // ---- Mochi: moods, eating, yanks ----
+    mood: i32,             // pet::face, shown until mood_timer ends it
+    mood_lively: bool,     // its motion and marks play (the first few seconds)
+    mood_timer: Timer,
+    lively_timer: Timer,
+    act: i32,              // a short scene over the mood (eating, a yank), or -1
+    act_lively: bool,
+    act_timer: Timer,
+    eating: bool,
+    feeds: Vec<u64>,       // unix seconds of treats in the last hour (full after 3)
+    pokes: Vec<Instant>,   // recent clicks on the peeking Mochi
+    excited_at: Option<Instant>,
 
     // ---- notifications ----
     notify_tx: Option<Sender<notify::Cmd>>,
@@ -525,16 +538,28 @@ impl App {
         }
     }
 
-    /// Mochi naps after a minute without pointer movement.
+    /// Mochi naps after a minute without pointer movement (getting sleepy first,
+    /// if it's out where you'd see it).
     fn restart_nap(&mut self) {
         self.nap_reset_at = Instant::now();
         self.nap_timer.start(TimerMode::SingleShot, Duration::from_secs(60), || {
             with_app(|a| {
-                a.pointer_awake = false;
-                a.blink_timer.stop();
-                a.update_pet_anim();
+                if a.mochi_visible() && !a.reduce_motion() && a.mood == pet::face::NEUTRAL && a.act < 0 {
+                    a.set_mood(pet::face::SLEEPY, 3000);
+                    a.nap_timer.start(TimerMode::SingleShot, Duration::from_millis(3000), || {
+                        with_app(|a| a.fall_asleep());
+                    });
+                } else {
+                    a.fall_asleep();
+                }
             });
         });
+    }
+
+    fn fall_asleep(&mut self) {
+        self.pointer_awake = false;
+        self.blink_timer.stop();
+        self.update_pet_anim();
     }
 
     fn schedule_blink(&mut self) {
@@ -592,15 +617,20 @@ impl App {
         }
     }
 
-    /// Can Mochi peek from this island right now?
+    /// Can Mochi peek from this island right now? It stays out while you hover
+    /// and while the island is open (riding its edge), except on its own panel
+    /// or when the open island leaves no room for it in the window.
     fn peek_ok(&self, v: &View) -> bool {
         let c = &self.cfg;
+        let size = pet::SIZES[c.pet_size.clamp(0, 2) as usize];
         c.pet && c.pet_peek && !self.reduce_motion() && self.away.is_none() && self.visitor.is_none()
-            && v.shown && !v.expanded && !v.hovering && !v.dragging && !v.drag_over && !v.pressed
-            && self.mode(v) == 0 && !self.tab(v)
+            && v.shown && !v.dragging && !v.drag_over && !v.pressed
+            && !(v.expanded && v.panel == P_PET)
+            && v.h.target.max(v.h.value) + size * 0.8 <= WIN_H
+            && matches!(self.mode(v), 0 | 2) && !self.tab(v)
             && matches!(self.edge_of(v), 0 | 1 | 4)
             // anything calm, music included; not over calls, drops or alerts
-            && matches!(self.compact_kind(v), C_GLANCE | C_PET | C_IDLE | C_MEDIA | C_LYRICS | C_SHELF | C_FOCUS | C_TIMER)
+            && matches!(self.compact_kind(v), C_GLANCE | C_PET | C_IDLE | C_MEDIA | C_LYRICS | C_SHELF | C_FOCUS | C_TIMER | C_LOW)
     }
 
     /// Keep the peek schedule in step with what the island is doing.
@@ -635,6 +665,7 @@ impl App {
             _ => self.rand() % 2 == 0,
         };
         self.peek = Some(i);
+        self.greet_mood();
         if walk {
             let from_left = self.rand() % 2 == 0;
             self.walk_step(i, from_left, 0);
@@ -686,6 +717,7 @@ impl App {
             0 => {
                 isl.set_peek_glide(0);
                 isl.set_peek_walking(false);
+                isl.set_peek_turning(false);
                 isl.set_peek_pos(0.5);
                 isl.set_peek_side(start);
                 isl.set_peek_out(true);
@@ -694,6 +726,7 @@ impl App {
             // round the corner onto the free edge
             1 => {
                 isl.set_peek_glide(320);
+                isl.set_peek_turning(true);
                 isl.set_peek_side(far);
                 isl.set_peek_pos(p0);
                 (360, 2)
@@ -702,6 +735,7 @@ impl App {
             2 => {
                 let mid = 0.35 + (self.rand() % 300) as f32 / 1000.0;
                 let ms = (span * (mid - p0).abs() / 45.0 * 1000.0) as u64;
+                isl.set_peek_turning(false);
                 isl.set_peek_walking(true);
                 isl.set_peek_glide(ms as i64);
                 isl.set_peek_pos(mid);
@@ -724,6 +758,7 @@ impl App {
             5 => {
                 isl.set_peek_walking(false);
                 isl.set_peek_glide(320);
+                isl.set_peek_turning(true);
                 isl.set_peek_side(end);
                 isl.set_peek_pos(0.5);
                 (1100, 6)
@@ -743,6 +778,7 @@ impl App {
         let Some(i) = self.peek else { return };
         if let Some(v) = self.views.get(i) {
             v.island.set_peek_walking(false);
+            v.island.set_peek_turning(false);
             v.island.set_peek_out(false);
         }
         self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(260), move || {
@@ -1464,12 +1500,17 @@ impl App {
             self.call = None;
         }
         v.expanded = true;
+        let pet_panel = v.panel == P_PET;
         self.hud_active = false;
         self.hud_timer.stop();
         self.pet_list_open = false;
         self.refresh_power();
         self.update_pet_ui();
         self.retarget();
+        self.pet_jolt(i, true);
+        if pet_panel {
+            self.greet_mood();
+        }
     }
 
     fn collapse(&mut self, i: usize) {
@@ -1482,6 +1523,7 @@ impl App {
                 system::set_esc_hotkey(platform::host_hwnd(), false);
             }
             self.retarget();
+            self.pet_jolt(i, false);
         }
     }
 
@@ -1493,8 +1535,7 @@ impl App {
     }
 
     fn my_id(&self) -> [u8; 3] {
-        let id = self.cfg.pet_id;
-        [(id >> 16) as u8, (id >> 8) as u8, id as u8]
+        self.beacon_id
     }
 
     /// Mochi is awake (and bobs gently) only while someone looks at it.
@@ -1522,9 +1563,10 @@ impl App {
     fn update_pet_ui(&self) {
         let name = self.cfg.pet_name.clone();
         let status = format!("{} · {}", pet::mood(self.cfg.pet_fed), pet::fed_ago(self.cfg.pet_fed));
-        let (visitor, vowner) = self.visitor.as_ref().map(|v| (v.pet.clone(), v.owner.clone())).unwrap_or_default();
+        let (visitor, vowner) = self.visitor.as_ref().map(|v| (v.pet.clone(), pet::shown_owner(&v.owner))).unwrap_or_default();
         let (away, away_to) = self.away.as_ref().map(|a| (true, a.1.clone())).unwrap_or((false, String::new()));
-        let items: Vec<NearbyItem> = self.nearby().into_iter().map(|p| NearbyItem { pet: p.pet.into(), owner: p.owner.into() }).collect();
+        let items: Vec<NearbyItem> =
+            self.nearby().into_iter().map(|p| NearbyItem { owner: pet::shown_owner(&p.owner).into(), pet: p.pet.into() }).collect();
         let (open, ok) = (self.pet_list_open, self.ble_ok && self.cfg.pet_nearby);
         self.each(|isl| {
             isl.set_pet_name(name.clone().into());
@@ -1568,7 +1610,9 @@ impl App {
         } else {
             (0, [0; 3])
         };
-        let _ = tx.send(pet::Cmd::Beacon { pet: self.cfg.pet_name.clone(), owner: self.owner.clone(), kind, target });
+        // any device in range can read the beacon: the name only goes out when the user opted in
+        let owner = if self.cfg.pet_share_name { self.owner.clone() } else { String::new() };
+        let _ = tx.send(pet::Cmd::Beacon { pet: self.cfg.pet_name.clone(), owner, kind, target });
     }
 
     fn on_ble(&mut self, ev: pet::Event) {
@@ -1580,7 +1624,7 @@ impl App {
                 // someone new nearby: a quiet heads-up, once per session
                 if let Some(p) = peers.iter().find(|p| !self.greeted.contains(&p.id)) {
                     self.greeted.push(p.id);
-                    let t = format!("{} is nearby", p.owner);
+                    let t = format!("{} is nearby", pet::shown_owner(&p.owner));
                     self.each(|isl| isl.set_nearby_text(t.clone().into()));
                     if self.away.is_none() && self.visitor.is_none() {
                         self.show_transient(C_NEARBY, 4000);
@@ -1590,6 +1634,7 @@ impl App {
                 if self.visitor.is_none() && self.away.is_none() && self.sending_home.is_none() {
                     if let Some(p) = peers.iter().find(|p| p.kind == 1 && p.target == me) {
                         self.visitor = Some(p.clone());
+                        self.set_mood(pet::face::LOVE, 8000);
                     }
                 }
                 // our visitor went home (its owner called it back, or walked away)
@@ -1619,12 +1664,227 @@ impl App {
         self.retarget();
     }
 
+    // ---------------- Mochi's moods ----------------
+
+    /// Show a mood for `ms`. Its motion and marks play for the first few seconds
+    /// (they redraw every frame), then the face stays still until it ends.
+    fn set_mood(&mut self, face: i32, ms: u64) {
+        self.mood = face;
+        self.mood_lively = face != pet::face::NEUTRAL && !self.reduce_motion();
+        self.push_face();
+        if self.mood_lively {
+            self.lively_timer.start(TimerMode::SingleShot, Duration::from_millis(ms.min(4000)), || {
+                with_app(|a| {
+                    a.mood_lively = false;
+                    a.push_face();
+                });
+            });
+        }
+        self.mood_timer.start(TimerMode::SingleShot, Duration::from_millis(ms), || {
+            with_app(|a| {
+                a.mood = pet::face::NEUTRAL;
+                a.mood_lively = false;
+                a.push_face();
+            });
+        });
+    }
+
+    /// A short scene over the mood (eating, a yank); `face` -1 ends it.
+    fn set_act(&mut self, face: i32, lively: bool) {
+        self.act = face;
+        self.act_lively = lively && !self.reduce_motion();
+        self.push_face();
+    }
+
+    fn push_face(&self) {
+        let (face, lively) = if self.act >= 0 { (self.act, self.act_lively) } else { (self.mood, self.mood_lively) };
+        self.each(|isl| {
+            let g = isl.global::<PetSkin>();
+            g.set_face(face);
+            g.set_lively(lively);
+        });
+    }
+
+    /// How Mochi feels when it comes out (or you open its panel), from what's going on.
+    fn greet_mood(&mut self) {
+        if self.mood != pet::face::NEUTRAL || self.act >= 0 {
+            return;
+        }
+        let hungry = self.cfg.pet_fed != 0 && pet::now_unix().saturating_sub(self.cfg.pet_fed) > 24 * 3600;
+        let face = if self.low_battery(10) {
+            pet::face::SCARED
+        } else if hungry {
+            pet::face::SAD
+        } else if self.playing() && self.lyric_state == L_MISSING && self.rand() % 2 == 0 {
+            pet::face::CONFUSED
+        } else if self.media.is_none() && self.rand() % 5 == 0 {
+            pet::face::BORED
+        } else {
+            return;
+        };
+        self.set_mood(face, 6000);
+    }
+
+    /// Music started: Mochi gets excited (at most every 5 minutes) and comes out to show it.
+    fn music_started(&mut self) {
+        if self.excited_at.is_some_and(|t| t.elapsed() < Duration::from_secs(300)) || self.act >= 0 {
+            return;
+        }
+        self.excited_at = Some(Instant::now());
+        self.set_mood(pet::face::EXCITED, 4000);
+        if self.peek.is_none() && self.views.iter().any(|v| self.peek_ok(v)) {
+            self.start_peek();
+        }
+    }
+
+    /// Clicked the peeking Mochi: it hides, but the third poke within a minute makes it angry.
+    fn poke_peek(&mut self) {
+        let now = Instant::now();
+        self.pokes.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
+        self.pokes.push(now);
+        if self.pokes.len() >= 3 && self.act < 0 && !self.reduce_motion() {
+            self.pokes.clear();
+            self.set_mood(pet::face::ANGRY, 2600);
+            // it stays out to make its point, then hides
+            self.peek_step.start(TimerMode::SingleShot, Duration::from_millis(2400), || {
+                with_app(|a| a.duck_peek());
+            });
+            return;
+        }
+        self.duck_peek();
+    }
+
+    /// The island sprang open (or shut) under the peeking Mochi: its edge yanks
+    /// Mochi along. Wide eyes and a stretch, then (opening) a squeezed-eye wobble.
+    fn pet_jolt(&mut self, i: usize, opening: bool) {
+        if self.peek != Some(i) || self.reduce_motion() || self.eating {
+            return;
+        }
+        if let Some(v) = self.views.get(i) {
+            v.island.global::<PetSkin>().set_jolt(if opening { 0.3 } else { 0.15 });
+        }
+        Timer::single_shot(Duration::from_millis(140), move || {
+            with_app(|a| {
+                if let Some(v) = a.views.get(i) {
+                    v.island.global::<PetSkin>().set_jolt(0.0); // eases back with a wobble
+                }
+            });
+        });
+        self.set_act(pet::face::SURPRISED, opening);
+        self.act_timer.start(TimerMode::SingleShot, Duration::from_millis(if opening { 520 } else { 320 }), move || {
+            with_app(|a| {
+                if !opening {
+                    a.set_act(-1, false);
+                    return;
+                }
+                a.set_act(pet::face::SQUEEZED, false);
+                a.act_timer.start(TimerMode::SingleShot, Duration::from_millis(420), || {
+                    with_app(|a| a.set_act(-1, false));
+                });
+            });
+        });
+    }
+
     fn pet_feed(&mut self) {
-        self.cfg.pet_fed = pet::now_unix();
+        if self.eating {
+            return;
+        }
+        let now = pet::now_unix();
+        self.feeds.retain(|t| now.saturating_sub(*t) < 3600);
+        let full = self.feeds.len() >= 3;
+        if self.reduce_motion() {
+            if full {
+                self.set_mood(pet::face::DISGUSTED, 1500);
+            } else {
+                self.fed(now);
+            }
+            return;
+        }
+        self.eating = true;
+        self.eat_step(0, full);
+    }
+
+    /// A treat went down: Mochi is happy for a minute.
+    fn fed(&mut self, now: u64) {
+        self.feeds.push(now);
+        self.cfg.pet_fed = now;
         self.cfg.save();
-        self.pet_bob = true;
-        self.each(|isl| isl.set_pet_bob(-4.0)); // a happy hop
+        self.set_mood(pet::face::HAPPY, 60_000);
         self.update_pet_ui();
+    }
+
+    /// Feeding, one step per timer: the treat drops, Mochi opens wide, chomps
+    /// three times, chews, then hops with a heart. When full, it turns away.
+    fn eat_step(&mut self, step: u32, full: bool) {
+        let mouth = |a: &Self, m: f32| a.each(|isl| isl.global::<PetSkin>().set_mouth(m));
+        let (ms, next) = match step {
+            0 => {
+                self.each(|isl| {
+                    isl.set_pet_treat(true);
+                    let g = isl.global::<PetSkin>();
+                    g.set_look_x(0.0);
+                    g.set_look_y(-1.0); // watches it fall
+                });
+                self.set_act(pet::face::NEUTRAL, false);
+                (380, 1)
+            }
+            1 if full => {
+                self.each(|isl| isl.set_pet_treat(false));
+                self.set_act(pet::face::DISGUSTED, true);
+                (1400, 99)
+            }
+            1 => {
+                mouth(self, 1.0);
+                (170, 2)
+            }
+            2 => {
+                self.each(|isl| {
+                    isl.set_pet_treat(false);
+                    isl.global::<PetSkin>().set_crumbs(true);
+                });
+                self.set_act(pet::face::SQUEEZED, true);
+                mouth(self, 0.2);
+                (190, 3)
+            }
+            3 | 5 => {
+                mouth(self, 0.8);
+                (190, step + 1)
+            }
+            4 | 6 => {
+                mouth(self, 0.2);
+                (190, step + 1)
+            }
+            7 => {
+                mouth(self, 0.0);
+                self.each(|isl| isl.global::<PetSkin>().set_crumbs(false));
+                self.set_act(pet::face::SLEEPY, false); // chewing, eyes shut
+                (450, 8)
+            }
+            8 => {
+                self.set_act(-1, false);
+                self.fed(pet::now_unix());
+                self.each(|isl| isl.global::<PetSkin>().set_hearts(true));
+                (1800, 100)
+            }
+            _ => {
+                self.each(|isl| {
+                    isl.set_pet_treat(false);
+                    let g = isl.global::<PetSkin>();
+                    g.set_mouth(0.0);
+                    g.set_crumbs(false);
+                    g.set_hearts(false);
+                });
+                if step == 99 {
+                    self.set_act(-1, false);
+                }
+                self.eating = false;
+                self.update_eyes();
+                return;
+            }
+        };
+        self.act_timer.start(TimerMode::SingleShot, Duration::from_millis(ms), move || {
+            with_app(|a| a.eat_step(next, full));
+        });
     }
 
     fn pet_send(&mut self, k: usize) {
@@ -2031,6 +2291,9 @@ impl App {
         self.push_lyric_state();
         self.lyrics_sync();
         self.retarget();
+        if self.playing() && !was_playing {
+            self.music_started();
+        }
     }
 
     // ---------------- lyrics ----------------
@@ -2053,6 +2316,10 @@ impl App {
         self.push_lyric_state();
         self.lyrics_sync();
         self.retarget();
+        // Mochi looks puzzled when there are no lyrics (if it's out to see it)
+        if self.lyric_state == L_MISSING && self.mochi_visible() && self.mood == pet::face::NEUTRAL {
+            self.set_mood(pet::face::CONFUSED, 3500);
+        }
     }
 
     /// Tell the islands whether this song has lyrics (shown as a chip and a glyph).
@@ -2384,8 +2651,7 @@ impl App {
             });
             s.on_restore_defaults(|| {
                 with_app(|a| {
-                    let (id, fed) = (a.cfg.pet_id, a.cfg.pet_fed);
-                    a.cfg = Config { pet_id: id, pet_fed: fed, ..Config::default() };
+                    a.cfg = Config { pet_fed: a.cfg.pet_fed, ..Config::default() };
                     a.cfg.save();
                     a.push_settings();
                     a.apply_config();
@@ -2404,6 +2670,12 @@ impl App {
             });
             s.on_remove_notifications(|| {
                 with_app(|a| a.remove_notifications());
+            });
+            s.on_set_pet_color(|which, c| {
+                with_app(|a| a.set_pet_color(which, rgb_u32(c)));
+            });
+            s.on_pick_pet_color(|which| {
+                with_app(|a| a.pick_pet_color(which));
             });
             s.window().on_close_requested(|| {
                 with_app(|a| a.mem_timer.stop());
@@ -2466,10 +2738,26 @@ impl App {
         s.set_mod_focus(c.focus);
         s.set_mod_pet(c.pet);
         s.set_pet_nearby(c.pet_nearby);
+        s.set_pet_share_name(c.pet_share_name);
+        s.set_owner_name(self.owner.clone().into());
         s.set_pet_peek(c.pet_peek);
         s.set_pet_track(c.pet_track);
         s.set_pet_name(c.pet_name.clone().into());
         s.set_pet_skin(c.pet_skin);
+        s.set_pet_body(rgb(c.pet_body));
+        s.set_pet_eyes(rgb(c.pet_eyes));
+        const BODIES: [u32; 8] = [0x000000, 0x3a3a3a, 0xf5f5f5, 0xfc90bc, 0xf99f55, 0xd3b63b, 0x6fd087, 0x71bfff];
+        const EYES: [u32; 7] = [0xd3b63b, 0x000000, 0xffffff, 0xfc90bc, 0xf99f55, 0x6fd087, 0x71bfff];
+        s.set_pet_body_custom(!BODIES.contains(&c.pet_body));
+        s.set_pet_eyes_custom(!EYES.contains(&c.pet_eyes));
+        let eyes_desc = if pet::contrast(c.pet_body, c.pet_eyes) >= 3.0 {
+            "Also its mouth while eating.".to_string()
+        } else {
+            let (_, shown, _) = pet::colors(c.pet_body, c.pet_eyes);
+            let other = if shown == 0 { "black" } else { "white" };
+            format!("Hard to see on this body, so Mochi uses {other} eyes until you pick another color.")
+        };
+        s.set_pet_eyes_desc(eyes_desc.into());
         s.set_pet_size(c.pet_size);
         s.set_pet_moves(c.pet_moves);
         s.set_pet_often(c.pet_often);
@@ -2529,9 +2817,14 @@ impl App {
         c.focus = s.get_mod_focus();
         c.pet = s.get_mod_pet();
         c.pet_nearby = s.get_pet_nearby();
+        c.pet_share_name = s.get_pet_share_name();
         c.pet_peek = s.get_pet_peek();
         c.pet_track = s.get_pet_track();
-        c.pet_skin = s.get_pet_skin().clamp(0, pet::SKINS.len() as i32 - 1);
+        c.pet_skin = s.get_pet_skin().clamp(-1, pet::SKINS.len() as i32 - 1);
+        if key == "skin" && c.pet_skin >= 0 {
+            let (_, body, eyes) = pet::SKINS[c.pet_skin as usize];
+            (c.pet_body, c.pet_eyes) = (body, eyes);
+        }
         c.pet_size = s.get_pet_size().clamp(0, 2);
         c.pet_moves = s.get_pet_moves().clamp(0, 2);
         c.pet_often = s.get_pet_often().clamp(0, 2);
@@ -2573,6 +2866,9 @@ impl App {
             for v in &self.views {
                 apply_skin(&v.island, &self.cfg);
             }
+        }
+        if key == "skin" {
+            self.push_settings(); // the color rows follow the preset
         }
         if matches!(key, "peek" | "moves" | "often" | "skin" | "petsize") {
             // show the change: Mochi comes out in a moment (if the island is quiet)
@@ -2635,6 +2931,37 @@ impl App {
                 }
                 a.push_settings();
             })
+        });
+    }
+
+    /// Settings > Pet > Body color (0) or Eye color (1).
+    fn set_pet_color(&mut self, which: i32, c: u32) {
+        if which == 0 {
+            self.cfg.pet_body = c;
+        } else {
+            self.cfg.pet_eyes = c;
+        }
+        self.cfg.pet_skin = pet::preset_of(self.cfg.pet_body, self.cfg.pet_eyes);
+        self.cfg.save();
+        for v in &self.views {
+            apply_skin(&v.island, &self.cfg);
+        }
+        self.push_settings();
+        self.flash_saved(if which == 0 { "petbody" } else { "peteyes" });
+        // show it off: Mochi comes out in a moment (if the island is quiet)
+        self.peek_timer.start(TimerMode::SingleShot, Duration::from_millis(1200), || {
+            with_app(|a| a.start_peek());
+        });
+    }
+
+    /// "Custom…": Windows' color picker, starting from the current color.
+    fn pick_pet_color(&self, which: i32) {
+        let Some(hwnd) = self.settings.as_ref().and_then(|s| platform::native(s.window())).map(|w| w.hwnd()) else { return };
+        let initial = if which == 0 { self.cfg.pet_body } else { self.cfg.pet_eyes };
+        system::choose_color(hwnd, initial, move |picked| {
+            if let Some(c) = picked {
+                post(move |a| a.set_pet_color(which, c));
+            }
         });
     }
 
@@ -2902,10 +3229,17 @@ fn quit() {
     let _ = slint::quit_event_loop();
 }
 
-/// Mochi's colors and size (skin 0 is the brand mascot; see pet::SKINS).
+fn rgb(c: u32) -> slint::Color {
+    slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+fn rgb_u32(c: slint::Color) -> u32 {
+    ((c.red() as u32) << 16) | ((c.green() as u32) << 8) | c.blue() as u32
+}
+
+/// Mochi's colors (any body and eye color; see pet::colors) and size.
 fn apply_skin(isl: &Island, cfg: &Config) {
-    let (_, head, eyes, island_head) = pet::SKINS[(cfg.pet_skin.max(0) as usize).min(pet::SKINS.len() - 1)];
-    let rgb = |c: u32| slint::Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    let (head, eyes, island_head) = pet::colors(cfg.pet_body, cfg.pet_eyes);
     let g = isl.global::<PetSkin>();
     g.set_head(rgb(head));
     g.set_eyes(rgb(eyes));
@@ -2928,7 +3262,7 @@ fn wire_island(island: &Island, i: usize) {
         with_app(|a| a.open_settings());
     });
     island.on_peek_poked(|| {
-        with_app(|a| a.duck_peek());
+        with_app(|a| a.poke_peek());
     });
     island.on_scrolled(|dy| {
         with_app(|a| {
@@ -3121,7 +3455,7 @@ fn host_handler(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, taskbar_created: u
 
 pub fn run() -> Result<(), slint::PlatformError> {
     let cfg = Config::load();
-    cfg.save(); // persists a freshly generated pet id
+    cfg.save(); // rewrites an older islo.ini in the current format
     let app = App {
         views: Vec::new(),
         settings: None,
@@ -3167,6 +3501,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         lyrics_tx: None,
         lyric_timer: Timer::default(),
         owner: pet::owner_name(),
+        beacon_id: pet::session_id(),
         ble_tx: None,
         ble_ok: true,
         peers: Vec::new(),
@@ -3190,6 +3525,17 @@ pub fn run() -> Result<(), slint::PlatformError> {
         peek_step: Timer::default(),
         rng: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1,
         pet_bob: false,
+        mood: pet::face::NEUTRAL,
+        mood_lively: false,
+        mood_timer: Timer::default(),
+        lively_timer: Timer::default(),
+        act: -1,
+        act_lively: false,
+        act_timer: Timer::default(),
+        eating: false,
+        feeds: Vec::new(),
+        pokes: Vec::new(),
+        excited_at: None,
         visit_timer: Timer::default(),
         home_timer: Timer::default(),
         notify_tx: None,

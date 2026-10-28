@@ -7,6 +7,8 @@
 //!   [0x15 magic][id: 3 bytes][kind][target id: 3 bytes][pet name len][pet name][owner name]
 //!   kind 0 = here, 1 = "my pet visits <target>", 2 = "I'm hosting <target>'s pet",
 //!   3 = "sending <target>'s pet home". Names are cut to fit the 24-byte budget.
+//!   Any device in range can read a beacon, so the owner name is empty unless
+//!   the user turns on "Show my name", and the id is new every time Islo starts.
 //!
 //! The radio thread only reports *changes* of the peer table to the UI, so a
 //! room full of beacons doesn't wake the UI thread a few times per second.
@@ -184,22 +186,88 @@ fn run(id: [u8; 3], rx: Receiver<Cmd>, cb: std::sync::Arc<dyn Fn(Event) + Send +
     }
 }
 
-/// Mochi's looks: (name, head, eyes, head on the black island).
+/// Mochi's preset looks: (name, body, eyes) as 0xRRGGBB. Any body and eye
+/// color can be picked in Settings; these are the starting points.
 /// Must match `skins` in settings.slint (same order).
-pub const SKINS: [(&str, u32, u32, u32); 6] = [
-    ("Classic", 0x000000, 0xd3b63b, 0x161616),
-    ("Snow", 0xf5f5f5, 0x000000, 0xf5f5f5),
-    ("Rose", 0xfc90bc, 0x000000, 0xfc90bc),
-    ("Mint", 0x6fd087, 0x000000, 0x6fd087),
-    ("Sky", 0x71bfff, 0x000000, 0x71bfff),
-    ("Ember", 0xf99f55, 0x000000, 0xf99f55),
+pub const SKINS: [(&str, u32, u32); 6] = [
+    ("Classic", 0x000000, 0xd3b63b),
+    ("Snow", 0xf5f5f5, 0x000000),
+    ("Rose", 0xfc90bc, 0x000000),
+    ("Mint", 0x6fd087, 0x000000),
+    ("Sky", 0x71bfff, 0x000000),
+    ("Ember", 0xf99f55, 0x000000),
 ];
+
+/// The preset with exactly these colors, or -1 for a custom look.
+pub fn preset_of(body: u32, eyes: u32) -> i32 {
+    SKINS.iter().position(|s| s.1 == body && s.2 == eyes).map_or(-1, |i| i as i32)
+}
+
+/// WCAG contrast ratio of two 0xRRGGBB colors (1 .. 21).
+pub fn contrast(a: u32, b: u32) -> f32 {
+    let lum = |c: u32| {
+        let ch = |v: u32| {
+            let v = v as f32 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch((c >> 16) & 255) + 0.7152 * ch((c >> 8) & 255) + 0.0722 * ch(c & 255)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The colors Mochi is drawn with: (body, eyes, body on the black island).
+/// Eyes that would vanish on the body (under 3:1) become black or white,
+/// and a body too dark for the island is drawn a step lighter there.
+pub fn colors(body: u32, eyes: u32) -> (u32, u32, u32) {
+    let eyes = if contrast(body, eyes) >= 3.0 {
+        eyes
+    } else if contrast(body, 0x000000) >= contrast(body, 0xffffff) {
+        0x000000
+    } else {
+        0xffffff
+    };
+    let island = if contrast(body, 0x000000) < 1.25 { 0x161616 } else { body };
+    (body, eyes, island)
+}
+
+/// Mochi's moods: the `face` numbers of the Mochi component (ui/icons.slint).
+pub mod face {
+    pub const NEUTRAL: i32 = 0;
+    pub const HAPPY: i32 = 1;
+    pub const SAD: i32 = 2;
+    pub const ANGRY: i32 = 3;
+    pub const SURPRISED: i32 = 4;
+    pub const SCARED: i32 = 5;
+    pub const DISGUSTED: i32 = 6;
+    pub const LOVE: i32 = 7;
+    pub const EXCITED: i32 = 8;
+    pub const CONFUSED: i32 = 10;
+    pub const SLEEPY: i32 = 11; // also chewing
+    pub const BORED: i32 = 12;
+    pub const SQUEEZED: i32 = 13; // >< : chomping, shaking off a yank
+}
 
 /// Size of the peeking / wandering Mochi (logical px) for small, medium, large.
 pub const SIZES: [f32; 3] = [26.0, 34.0, 44.0];
 
 /// Wait between appearances (ms) for rarely, sometimes, often.
 pub const OFTEN: [(u64, u64); 3] = [(45_000, 90_000), (15_000, 35_000), (5_000, 12_000)];
+
+/// A random beacon id for this run of Islo (never saved, so a PC can't be
+/// recognized from one day to the next). 0 is left out: it means "no target".
+pub fn session_id() -> [u8; 3] {
+    use std::hash::{BuildHasher, Hasher};
+    // RandomState is seeded from the OS's random number generator
+    let r = std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let id = ((r >> 40) as u32 & 0xff_ffff).max(1);
+    [(id >> 16) as u8, (id >> 8) as u8, id as u8]
+}
+
+/// How a nearby owner is shown: their first name if they share it.
+pub fn shown_owner(owner: &str) -> String {
+    if owner.is_empty() { "A friend".into() } else { owner.into() }
+}
 
 /// First name of the signed-in Windows user ("Frumentius Daneswara" -> "Frumentius").
 pub fn owner_name() -> String {
@@ -247,4 +315,49 @@ pub fn mood(fed_unix: u64) -> &'static str {
 
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eyes_stay_visible_on_any_body() {
+        // the brand look is kept as is, and drawn a step lighter on the black island
+        assert_eq!(colors(0x000000, 0xd3b63b), (0x000000, 0xd3b63b, 0x161616));
+        // white eyes on a snow body would vanish: black instead
+        assert_eq!(colors(0xf5f5f5, 0xffffff).1, 0x000000);
+        // black eyes on a near-black body: white instead
+        assert_eq!(colors(0x101010, 0x000000).1, 0xffffff);
+        // a colored body shows as itself in the island
+        assert_eq!(colors(0x71bfff, 0x000000).2, 0x71bfff);
+        assert!((contrast(0x000000, 0xffffff) - 21.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn beacon_carries_the_owner_only_when_given() {
+        for kind in 0..4 {
+            let v = encode([0x12, 0x34, 0x56], "Mochi", "", kind, [0xaa, 0xbb, 0xcc]);
+            assert_eq!(v.len(), 9 + 5, "no owner bytes after the pet name");
+            let p = decode(&v).unwrap();
+            assert_eq!((p.id, p.kind, p.pet.as_str(), p.owner.as_str()), ([0x12, 0x34, 0x56], kind, "Mochi", ""));
+        }
+        let v = encode([1, 2, 3], "Mochi", "Testfirst", 0, [0; 3]);
+        assert_eq!(decode(&v).unwrap().owner, "Testfirst");
+        assert_eq!(shown_owner(""), "A friend");
+    }
+
+    #[test]
+    fn beacon_id_is_new_each_session() {
+        let ids: Vec<[u8; 3]> = (0..8).map(|_| session_id()).collect();
+        assert!(ids.iter().all(|id| *id != [0; 3]));
+        assert!(ids.windows(2).any(|w| w[0] != w[1]), "ids repeat: {ids:?}");
+    }
+
+    #[test]
+    fn presets_are_found_by_their_colors() {
+        assert_eq!(preset_of(0x000000, 0xd3b63b), 0);
+        assert_eq!(preset_of(0xf99f55, 0x000000), 5);
+        assert_eq!(preset_of(0x123456, 0x000000), -1);
+    }
 }

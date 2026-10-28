@@ -213,6 +213,15 @@ export global PetSkin {
     in-out property <float> look-x: 0;
     in-out property <float> look-y: 0;
     in-out property <float> blink: 0;
+    // mood (see Mochi in icons.slint and pet::face)
+    in-out property <int> face: 0;
+    in-out property <bool> lively: false;
+    in-out property <float> mouth: 0;
+    in-out property <bool> crumbs: false;
+    in-out property <bool> hearts: false;
+    // a yank by the island's edge (hover open / close): how far Mochi is stretched,
+    // eased back with a wobble when Rust sets it to 0
+    in-out property <float> jolt: 0;
 }
 
 // Mochi, the pet. Sleeps with its eyes shut; awake, its eyes follow the pointer.
@@ -234,6 +243,12 @@ component PetGlyph inherits Rectangle {
         look-x: root.look ? PetSkin.look-x : -0.6;
         look-y: root.look ? PetSkin.look-y : 0.1;
         blink: PetSkin.blink;
+        // moods are ours only (a visiting pet doesn't `look`)
+        face: root.look ? PetSkin.face : 0;
+        lively: root.look && PetSkin.lively;
+        mouth: root.look ? PetSkin.mouth : 0;
+        crumbs: root.look && PetSkin.crumbs;
+        hearts: root.look && PetSkin.hearts;
     }
 }
 
@@ -414,6 +429,8 @@ export component Island inherits Window {
     // (0 = follow at once), and while walking Mochi hops along
     in property <duration> peek-glide: 0ms;
     in property <bool> peek-walking: false;
+    in property <bool> peek-turning: false; // rounding a corner: x/y glide too
+    in property <bool> pet-treat: false;    // a treat drops to Mochi in the pet panel
     callback peek-poked();
     in property <length> pet-bob: 0px;
     in property <string> visitor: "";        // a friend's pet staying here
@@ -557,8 +574,10 @@ export component Island inherits Window {
     // Lives behind the pill: it slides out from under an edge, looks around (eyes
     // follow the pointer) and ducks back. Its black head merges with the island,
     // so it reads as the island growing ears. Poke it and it hides.
-    // Walking around: Rust moves it side -> corner -> along the edge -> corner,
-    // and x/y glide between those spots (linear while walking).
+    // Walking around: Rust moves it side -> corner -> along the edge -> corner.
+    // The spot along the edge glides (linear while walking); x/y themselves only
+    // glide while rounding a corner, so Mochi rides the pill's edge exactly when
+    // the island springs open or shut under it (it gets dragged along).
     if root.peek-side != 0 : peek := Rectangle {
         property <length> size: PetSkin.size;
         property <float> t: root.peek-out ? 1 : 0;
@@ -566,17 +585,22 @@ export component Island inherits Window {
         property <length> shown: size * 0.72 * t; // how far it's out
         property <length> span-x: pill.width - 2 * root.radius - size;
         property <length> span-y: pill.height - size;
+        property <float> pos: root.peek-pos;
+        animate pos { duration: root.reduce-motion ? 0ms : root.peek-glide; easing: root.peek-walking ? linear : ease-in-out; }
         width: size;
         height: size;
         x: root.peek-side == 2 ? pill.x - shown
             : root.peek-side == 3 ? pill.x + pill.width - size + shown
-            : pill.x + root.radius + max(0px, span-x) * root.peek-pos;
+            : pill.x + root.radius + max(0px, span-x) * pos;
         y: root.peek-side == 1 ? pill.y + pill.height - size + shown
             : root.peek-side == 4 ? pill.y - shown
             : pill.y + max(0px, span-y) / 2;
-        animate x, y { duration: root.reduce-motion ? 0ms : root.peek-glide; easing: root.peek-walking ? linear : ease-in-out; }
+        animate x, y { duration: root.reduce-motion || !root.peek-turning ? 0ms : root.peek-glide; easing: ease-in-out; }
         // a little hop with each step (only ticks while walking)
         property <length> hop: root.peek-walking ? abs(sin(animation-tick() / 1ms * 1deg)) * 2.5px : 0px;
+        // the yank: stretch fast, then wobble back
+        property <float> jolt: PetSkin.jolt;
+        animate jolt { duration: PetSkin.jolt > 0 ? 110ms : 700ms; easing: PetSkin.jolt > 0 ? ease-out : ease-out-elastic; }
         Mochi {
             y: root.peek-side == 4 ? peek.hop : -peek.hop; // bobs toward the island
             width: parent.width;
@@ -588,8 +612,15 @@ export component Island inherits Window {
             look-x: PetSkin.look-x;
             look-y: PetSkin.look-y;
             blink: PetSkin.blink;
+            // shy while the pointer rests right on it
+            face: peek-ta.has-hover && PetSkin.face == 0 ? 9 : PetSkin.face;
+            lively: PetSkin.lively || (peek-ta.has-hover && PetSkin.face == 0 && !root.reduce-motion);
+            mouth: PetSkin.mouth;
+            crumbs: PetSkin.crumbs;
+            hearts: PetSkin.hearts;
+            stretch: 1 + peek.jolt;
         }
-        TouchArea {
+        peek-ta := TouchArea {
             clicked => { root.peek-poked(); }
         }
     }
@@ -1417,6 +1448,25 @@ export component Island inherits Window {
                         bob: root.pet-bob;
                         animate bob { duration: root.reduce-motion ? 0ms : 280ms; easing: ease-in-out; }
                         opacity: root.pet-away ? 0.35 : 1;
+                    }
+                    // Feed: a fish treat drops from above into Mochi's mouth
+                    Path {
+                        // transparent rather than hidden: a hidden element never computes its
+                        // starting position, so the drop wouldn't animate
+                        opacity: root.pet-treat ? 1 : 0;
+                        x: 24px - 9px;
+                        // (it also rises back while transparent, so it always starts from the top)
+                        property <float> fall: root.pet-treat ? 1 : 0;
+                        animate fall { duration: root.reduce-motion ? 0ms : 520ms; easing: ease-in; }
+                        y: -26px + self.fall * 52px;
+                        width: 18px;
+                        height: 10px;
+                        viewbox-x: -7;
+                        viewbox-y: -4;
+                        viewbox-width: 16;
+                        viewbox-height: 8;
+                        fill: T.orange;
+                        commands: "M-6 0C-3 -3.6 2 -3.6 4.5 0C2 3.6 -3 3.6 -6 0ZM4.5 0L8 -3L8 3Z";
                     }
                     if root.visitor != "" : PetGlyph {
                         x: 34px;

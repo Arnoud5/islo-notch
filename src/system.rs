@@ -24,6 +24,37 @@ pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+// ---------------- color picker ----------------
+
+/// The dialog's 16 "custom colors", kept while Islo runs.
+static CUSTOM_COLORS: std::sync::Mutex<[u32; 16]> = std::sync::Mutex::new([0x00ff_ffff; 16]);
+
+/// Windows' color dialog (any color), owned by `owner`. It runs on its own
+/// thread so Islo's event loop isn't re-entered while it's open; `done` gets
+/// the pick as 0xRRGGBB, or None when cancelled.
+pub fn choose_color(owner: HWND, initial: u32, done: impl FnOnce(Option<u32>) + Send + 'static) {
+    use windows::Win32::UI::Controls::Dialogs::{CC_ANYCOLOR, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
+    // COLORREF is 0x00BBGGRR; swapping red and blue converts both ways
+    let swap = |c: u32| ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff);
+    let owner = owner.0 as isize;
+    let _ = std::thread::Builder::new().name("islo-color".into()).spawn(move || {
+        let mut custom = CUSTOM_COLORS.lock().map(|c| *c).unwrap_or([0x00ff_ffff; 16]).map(COLORREF);
+        let mut cc = CHOOSECOLORW {
+            lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+            hwndOwner: HWND(owner as _),
+            rgbResult: COLORREF(swap(initial)),
+            lpCustColors: custom.as_mut_ptr(),
+            Flags: CC_ANYCOLOR | CC_FULLOPEN | CC_RGBINIT,
+            ..Default::default()
+        };
+        let ok = unsafe { ChooseColorW(&mut cc) }.as_bool();
+        if let Ok(mut c) = CUSTOM_COLORS.lock() {
+            *c = custom.map(|x| x.0);
+        }
+        done(ok.then(|| swap(cc.rgbResult.0)));
+    });
+}
+
 // ---------------- battery ----------------
 
 #[derive(Clone, Copy, PartialEq, Debug)]

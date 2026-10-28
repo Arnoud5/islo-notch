@@ -147,18 +147,29 @@ fn lookup(r: &Request, rx: &Receiver<Request>, pending: &mut Option<Request>) ->
         return None;
     }
     if let Some(p) = plain {
-        let mut lines: Lines = p.lines().map(|l| (0.0, crate::system::display_text(l, 200))).collect();
-        while lines.first().is_some_and(|l| l.1.is_empty()) {
-            lines.remove(0);
-        }
-        while lines.last().is_some_and(|l| l.1.is_empty()) {
-            lines.pop();
-        }
+        let lines = plain_lines(&p);
         if !lines.is_empty() {
             return Some(Found { lines, synced: false, ..Default::default() });
         }
     }
     Some(Found { instrumental, offline: !reached, ..Default::default() })
+}
+
+/// Plain lyrics: every line at 0 s, without blank lines around them.
+fn plain_lines(text: &str) -> Lines {
+    let mut lines: Lines = text
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .take(MAX_LINES)
+        .map(|l| (0.0, crate::system::display_text(l, 200)))
+        .collect();
+    // display_text may blank a line that only held control characters
+    let lead = lines.iter().take_while(|l| l.1.is_empty()).count();
+    lines.drain(..lead);
+    while lines.last().is_some_and(|l| l.1.is_empty()) {
+        lines.pop();
+    }
+    lines
 }
 
 enum Pick {
@@ -387,6 +398,12 @@ fn enc(s: &str) -> String {
     out
 }
 
+/// Most lines kept from one song's lyrics. Real songs have well under 200;
+/// LRCLIB is open to edits, so a huge record mustn't eat memory or the UI.
+const MAX_LINES: usize = 2000;
+/// Most timestamps one LRC line may carry (a chorus repeated a few times).
+const MAX_STAMPS: usize = 16;
+
 /// Parse LRC: "[01:23.45] text" (a line may carry several timestamps).
 pub fn parse_lrc(text: &str) -> Lines {
     let mut lines = Vec::new();
@@ -398,17 +415,27 @@ pub fn parse_lrc(text: &str) -> Lines {
             let tag = &r[..end];
             if let Some((m, s)) = tag.split_once(':') {
                 if let (Ok(m), Ok(s)) = (m.trim().parse::<f64>(), s.trim().parse::<f64>()) {
-                    stamps.push(m * 60.0 + s);
+                    // f64 parsing takes "nan" and "inf" too: only real times count
+                    let t = m * 60.0 + s;
+                    if t.is_finite() && stamps.len() < MAX_STAMPS {
+                        stamps.push(t);
+                    }
                 }
             }
             rest = r[end + 1..].trim_start();
         }
+        if stamps.is_empty() {
+            continue;
+        }
         let text = crate::system::display_text(rest, 200);
-        for t in stamps {
+        for t in stamps.into_iter().take(MAX_LINES - lines.len()) {
             lines.push((t, text.clone()));
         }
+        if lines.len() == MAX_LINES {
+            break;
+        }
     }
-    lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
     // instrumental gaps: plain dots (in every font, so no fallback font is needed)
     for l in &mut lines {
         if l.1.trim().is_empty() {
@@ -455,6 +482,34 @@ mod tests {
         };
         let f = lookup(&req, &rx, &mut None).expect("not stale");
         assert!(f.synced && f.lines.len() > 10, "found {} lines, synced {}", f.lines.len(), f.synced);
+    }
+
+    #[test]
+    fn skips_stamps_that_are_not_times() {
+        // NaN in a sort comparator could panic, which aborts a release build
+        for n in 21..=64 {
+            let lrc: String = (0..n)
+                .map(|i| if i % 3 == 0 { format!("[nan:00] x{i}\n") } else { format!("[inf:{i}]  [00:{:02}.00] l{i}\n", n - i) })
+                .collect();
+            let lines = parse_lrc(&lrc);
+            assert!(lines.iter().all(|l| l.0.is_finite()));
+            assert!(lines.windows(2).all(|w| w[0].0 <= w[1].0));
+            assert_eq!(lines.len(), n - (n + 2) / 3);
+        }
+    }
+
+    #[test]
+    fn caps_huge_lyrics() {
+        let lrc = "[0:0]".repeat(400_000) + " line";
+        assert_eq!(parse_lrc(&lrc).len(), MAX_STAMPS);
+        let lrc = "[0:0] line\n".repeat(400_000);
+        assert_eq!(parse_lrc(&lrc).len(), MAX_LINES);
+
+        let start = std::time::Instant::now();
+        let plain = "\n".repeat(1_000_000) + "a\nb\n\n\nc\nd\n\n";
+        assert_eq!(plain_lines(&plain).iter().map(|l| l.1.as_str()).collect::<Vec<_>>(), ["a", "b", "", "", "c", "d"]);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "took {:?}", start.elapsed());
+        assert_eq!(plain_lines(&"x\n".repeat(10_000)).len(), MAX_LINES);
     }
 
     #[test]

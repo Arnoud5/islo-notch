@@ -44,9 +44,20 @@ Settings are saved in `islo.ini` next to the exe, so nothing is written to C:.
 - **File shelf:** a dashed drop zone, file tiles with sizes, "Kept · 1 file".
 - **Mochi the pet:** naps in the island and is awake only while you look at it.
   Now and then it peeks out or walks all the way around the island (also while
-  music plays). Pick its look, size, what it does and how often in
-  Settings → Modules → Pet. Feed it, and send it to visit a friend's PC nearby
-  over Bluetooth (no pairing, no account).
+  music plays). It keeps walking while you hover; when the island springs open
+  it gets dragged along by the edge, shocked, then shakes it off. Feed it and
+  a treat drops in: it chomps, chews and hops with a heart (three treats an hour
+  and it's full). It has moods too, each with its own eyes, mark and motion:
+  happy after eating, sad when not fed for a day, angry when poked three times,
+  surprised when yanked, scared on a very low battery, disgusted when overfed,
+  in love when a friend's pet visits, excited when music starts, shy when you
+  rest the pointer on it, confused when a song has no lyrics, sleepy before a
+  nap, bored when nothing's on. Pick its size, what it does, how often, and any
+  body and eye color (presets, dots, or Windows' color picker) in
+  Settings → Modules → Pet. Send it to visit a friend's PC nearby over
+  Bluetooth (no pairing, no account). Any device in range can read the
+  beacon: it carries your pet's name and an id that changes every time Islo
+  starts, and your first name only if you turn on "Show my name".
 - **Notifications and calls** (after the one-time setup below). New
   notifications show briefly, then wait as a blue count. Calls arriving as
   notifications (Teams, WhatsApp, Phone Link, Zoom) show in green.
