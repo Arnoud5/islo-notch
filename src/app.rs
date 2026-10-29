@@ -2010,6 +2010,9 @@ impl App {
             v.hidden_fullscreen = fs;
             if fs {
                 v.expanded = false;
+            } else if self.cfg.keep_open {
+                // back from full screen: a pinned island opens again
+                self.expand(i);
             }
             return true;
         }
@@ -2144,6 +2147,11 @@ impl App {
         self.push_island_settings();
         self.place_all();
         self.retarget();
+        // The island shrinks to the pill while it's carried; pinned, it opens
+        // again where it lands.
+        if self.cfg.keep_open {
+            self.expand(i);
+        }
     }
 
     fn on_press(&mut self, i: usize, pressed: bool) {
@@ -3369,16 +3377,22 @@ impl App {
                 let v = &mut self.views[i];
                 v.drag_over = false;
                 v.hover_timer.stop();
-                if v.expanded && !v.hovering {
+                if v.expanded && !v.hovering && !self.cfg.keep_open {
                     v.expanded = false;
                 }
             }
             DropEvent::Drop(files) => {
+                let pinned = self.cfg.keep_open;
                 {
                     let v = &mut self.views[i];
                     v.drag_over = false;
                     v.hover_timer.stop();
-                    v.expanded = false;
+                    if pinned {
+                        // stays open on the shelf, showing what you dropped
+                        v.panel = P_SHELF;
+                    } else {
+                        v.expanded = false;
+                    }
                 }
                 let mut added = 0;
                 for f in files {
