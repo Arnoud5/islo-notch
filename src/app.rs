@@ -267,6 +267,7 @@ struct App {
     squish_timer: Timer,
     hearts_timer: Timer,
     carrying: bool,
+    carry_watch: Timer, // while held: follow the real pointer, drop on release
     /// Tic-tac-toe.
     game_board: game::Board,
     game_over: Option<(u8, Option<[usize; 3]>)>,
@@ -511,15 +512,7 @@ impl App {
         let tabs = if n > 1 { n as f32 * 28.0 } else { 0.0 };
         let ring = if self.cfg.battery && self.battery.present && v.panel != P_POWER { 26.0 } else { 0.0 };
         let room = EXPANDED_W - 2.0 * PAD - tabs - ring - 2.0 * 28.0 - 8.0;
-        let width = |t: &str| t.chars().count() as f32 * 6.2 + 4.0;
-        let want = self.clock_text();
-        if width(&want) <= room {
-            want
-        } else if self.cfg.clock == 1 && width(&self.time_text) <= room {
-            self.time_text.clone()
-        } else {
-            String::new()
-        }
+        fit_clock(self.cfg.clock, &self.time_text, &self.date_text, room)
     }
 
     fn push_clock(&self) {
@@ -737,7 +730,8 @@ impl App {
     /// Keep the peek schedule in step with what the island is doing.
     fn update_peek(&mut self) {
         if let Some(i) = self.peek {
-            if self.views.get(i).is_none_or(|v| !self.peek_ok(v)) {
+            // never out of your hand: it lands first, then may hide
+            if !self.carrying && self.views.get(i).is_none_or(|v| !self.peek_ok(v)) {
                 self.duck_peek();
             }
             return;
@@ -877,6 +871,9 @@ impl App {
     /// Mochi hides behind the island again (also when poked or the island wakes up).
     fn duck_peek(&mut self) {
         let Some(i) = self.peek else { return };
+        if self.carrying {
+            return; // held: it hides once you let go
+        }
         if let Some(v) = self.views.get(i) {
             v.island.set_peek_walking(false);
             v.island.set_peek_turning(false);
@@ -886,6 +883,7 @@ impl App {
             with_app(|a| {
                 if let Some(v) = a.views.get(i) {
                     v.island.set_peek_side(0);
+                    v.island.set_pet_out(false); // back in the pill / Pet tab
                 }
                 a.peek = None;
                 a.update_peek();
@@ -1038,7 +1036,7 @@ impl App {
     fn toggle_pin(&mut self, i: usize) {
         self.cfg.keep_open = !self.cfg.keep_open;
         self.cfg.save();
-        self.push_settings();
+        self.push_island_settings();
         if self.cfg.keep_open {
             if self.views.get(i).is_some_and(|v| !v.expanded) {
                 self.expand(i);
@@ -1057,7 +1055,7 @@ impl App {
         if self.cfg.keep_open {
             self.cfg.keep_open = false;
             self.cfg.save();
-            self.push_settings();
+            self.push_island_settings();
         }
     }
 
@@ -1120,10 +1118,17 @@ impl App {
         self.update_pet_anim();
     }
 
-    /// Mochi picked up (it hangs from the pointer, eyes wide).
+    /// Mochi picked up (it hangs from the pointer, eyes wide). Works on the
+    /// peeking Mochi and on the one in the pill or the Pet tab, which comes out.
     fn pet_carry(&mut self, i: usize, x: f32, y: f32) {
-        if self.peek != Some(i) || !self.cfg.pet_touch {
+        if !self.cfg.pet_touch || self.eating {
             return;
+        }
+        if self.peek.is_none() && !self.lift_pet(i) {
+            return;
+        }
+        if self.peek != Some(i) {
+            return; // out on another display
         }
         let Some(v) = self.views.get(i) else { return };
         let (ww, wh) = self.win_size(v);
@@ -1136,10 +1141,66 @@ impl App {
             isl.set_peek_turning(false);
             self.set_act(pet::face::SURPRISED, true);
             isl.global::<PetSkin>().set_jolt(0.14); // dangling: a little stretched
+            // The press can belong to the pill or the Pet tab, which may close
+            // mid-drag and miss the release. So while held (only then), follow
+            // the real pointer each frame and let go when the button is up.
+            self.carry_watch.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+                with_app(|a| a.carry_follow(i));
+            });
         }
         isl.set_peek_free(true);
         isl.set_peek_fx(clamp_safe(x, size / 2.0, ww - size / 2.0));
         isl.set_peek_fy(clamp_safe(y, size / 2.0, wh - size / 2.0));
+    }
+
+    fn carry_follow(&mut self, i: usize) {
+        if !self.carrying || i >= self.views.len() {
+            self.carry_watch.stop();
+            return;
+        }
+        let v = &self.views[i];
+        let pt = cursor();
+        let (wx, wy) = v.win.pos();
+        let s = v.win.scale();
+        let (x, y) = ((pt.x - wx) as f32 / s, (pt.y - wy) as f32 / s);
+        if unsafe { GetKeyState(VK_LBUTTON.0 as i32) } < 0 {
+            let (ww, wh) = self.win_size(v);
+            let size = pet::SIZES[self.cfg.pet_size.clamp(0, 2) as usize];
+            v.island.set_peek_fx(clamp_safe(x, size / 2.0, ww - size / 2.0));
+            v.island.set_peek_fy(clamp_safe(y, size / 2.0, wh - size / 2.0));
+        } else {
+            self.pet_drop(i, x, y);
+        }
+    }
+
+    /// Mochi out of the pill or the Pet tab and into your pointer: it becomes the
+    /// peeking Mochi, held. The open island closes so there's room to put it down.
+    fn lift_pet(&mut self, i: usize) -> bool {
+        let c = &self.cfg;
+        let Some(v) = self.views.get(i) else { return false };
+        let ok = c.pet && c.pet_touch && self.away.is_none() && self.visitor.is_none()
+            && v.shown && !v.dragging && !v.drag_over && matches!(self.edge_of(v), 0 | 1 | 4);
+        if !ok {
+            return false;
+        }
+        self.peek_timer.stop();
+        self.peek = Some(i);
+        let isl = v.island.clone_strong();
+        isl.set_peek_glide(0);
+        isl.set_peek_walking(false);
+        isl.set_peek_turning(false);
+        isl.set_peek_side(1);
+        isl.set_peek_pos(0.5);
+        isl.set_peek_out(true);
+        isl.set_peek_free(true);
+        isl.set_pet_out(true);
+        if self.views[i].expanded && !self.cfg.keep_open {
+            self.collapse(i);
+        }
+        self.update_pointer_watch();
+        self.update_eyes();
+        self.update_pet_anim();
+        true
     }
 
     /// Let go: Mochi lands on the nearest spot around the island with a squash.
@@ -1148,6 +1209,7 @@ impl App {
             return;
         }
         self.carrying = false;
+        self.carry_watch.stop();
         let Some(v) = self.views.get(i) else { return };
         let size = pet::SIZES[self.cfg.pet_size.clamp(0, 2) as usize];
         let (px, py, w, h) = self.pill_rect(v);
@@ -1800,6 +1862,9 @@ impl App {
         let island = Island::new()?;
         let win = platform::native(island.window()).expect("island window");
         island.set_shelf_items(self.shelf_model.clone().into());
+        let (compact, open) = crate::shadow::images();
+        island.set_shadow_compact(compact);
+        island.set_shadow_open(open);
         wire_island(&island, idx);
         shelf::register_drop_target(win.hwnd(), move |ev| {
             with_app(|a| a.on_drop(idx, ev));
@@ -2076,7 +2141,7 @@ impl App {
         self.click_timer.start(TimerMode::SingleShot, Duration::from_millis(400), || {
             with_app(|a| a.views.iter_mut().for_each(|v| v.suppress_click = false));
         });
-        self.push_settings();
+        self.push_island_settings();
         self.place_all();
         self.retarget();
     }
@@ -2107,15 +2172,17 @@ impl App {
         let delay = self.cfg.hover_delay as u64;
         let hover_expand = self.cfg.hover_expand;
         let keep_open = self.cfg.keep_open;
+        let carrying = self.carrying;
         let v = &mut self.views[i];
         v.hovering = h;
         if h {
             v.leave_timer.stop();
-            if hover_expand && !v.expanded && !v.scroll_hold {
+            // carrying Mochi across the pill doesn't open it
+            if hover_expand && !v.expanded && !v.scroll_hold && !carrying {
                 // Hover intent: open only after the pointer rests a moment.
                 v.hover_timer.start(TimerMode::SingleShot, Duration::from_millis(delay), move || {
                     with_app(|a| {
-                        if a.views.get(i).is_some_and(|v| v.hovering && !v.dragging && !v.scroll_hold) {
+                        if !a.carrying && a.views.get(i).is_some_and(|v| v.hovering && !v.dragging && !v.scroll_hold) {
                             a.expand(i);
                         }
                     });
@@ -3346,7 +3413,9 @@ impl App {
     // ---------------- settings ----------------
 
     fn settings_dark(&self) -> bool {
-        match self.cfg.theme {
+        // the window previews its own theme before Save, so go by what it shows
+        let theme = self.settings.as_ref().map_or(self.cfg.theme, |s| s.get_theme());
+        match theme {
             1 => false,
             2 => true,
             _ => system::apps_dark_mode(),
@@ -3358,24 +3427,31 @@ impl App {
             platform::set_next_kind(Kind::Normal);
             let Ok(s) = SettingsWindow::new() else { return };
             s.on_changed(|key| {
-                with_app(|a| a.settings_changed(key.as_str()));
+                with_app(|a| a.settings_edit(key.as_str()));
+            });
+            s.on_save_changes(|| {
+                with_app(|a| a.save_settings());
+            });
+            s.on_discard_changes(|| {
+                with_app(|a| a.discard_settings());
             });
             s.on_reset_position(|| {
                 with_app(|a| {
                     a.cfg.edge = Edge::Top;
                     a.cfg.edge_pos = 0.5;
                     a.cfg.save();
-                    a.push_settings();
+                    a.push_island_settings();
                     a.flash_saved("edge");
                     a.apply_config();
                 });
             });
             s.on_restore_defaults(|| {
                 with_app(|a| {
-                    a.cfg = Config { pet_fed: a.cfg.pet_fed, ..Config::default() };
-                    a.cfg.save();
-                    a.push_settings();
-                    a.apply_config();
+                    // into the window only: Save applies them, Discard keeps yours
+                    let Some(s) = &a.settings else { return };
+                    let defaults = Config { pet_fed: a.cfg.pet_fed, ..Config::default() };
+                    fill_settings(s, &defaults);
+                    a.settings_edit("defaults");
                 });
             });
             s.on_quit_app(quit);
@@ -3399,16 +3475,17 @@ impl App {
                 with_app(|a| a.pick_pet_color(which));
             });
             s.window().on_close_requested(|| {
-                with_app(|a| a.mem_timer.stop());
-                // Free the settings UI once closed (it's rebuilt on next open).
-                Timer::single_shot(Duration::from_millis(0), || {
-                    with_app(|a| {
-                        if let Some(s) = a.settings.take() {
-                            let _ = s.hide();
-                            platform::forget(s.window());
-                        }
-                    });
-                });
+                let unsaved = with_app(|a| {
+                    let s = a.settings.as_ref()?;
+                    s.get_dirty().then(|| s.set_close_warn(true))
+                })
+                .flatten()
+                .is_some();
+                if unsaved {
+                    // the save bar asks: Save or Discard, and either one closes
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
+                with_app(|a| a.close_settings());
                 slint::CloseRequestResponse::HideWindow
             });
             self.settings = Some(s);
@@ -3429,71 +3506,33 @@ impl App {
         });
     }
 
-    /// Copy the config into the settings window.
+    /// Free the settings UI once closed (it's rebuilt on next open).
+    fn close_settings(&mut self) {
+        self.mem_timer.stop();
+        Timer::single_shot(Duration::from_millis(0), || {
+            with_app(|a| {
+                if let Some(s) = a.settings.take() {
+                    let _ = s.hide();
+                    platform::forget(s.window());
+                }
+            });
+        });
+    }
+
+    /// Copy the config into the settings window. With unsaved changes there,
+    /// only the status rows are updated, so a notification never wipes what
+    /// you picked.
     fn push_settings(&self) {
         let Some(s) = &self.settings else { return };
         let c = &self.cfg;
+        if !s.get_dirty() {
+            fill_settings(s, c);
+        }
         s.set_dark(self.settings_dark());
         s.set_reduce_ui(self.reduce_motion());
-        s.set_width_px(c.width);
-        s.set_edge(c.edge.index());
-        s.set_side_style(c.side_style);
-        s.set_hover_expand(c.hover_expand);
-        s.set_hover_delay(c.hover_delay as f32);
-        s.set_theme(c.theme);
-        s.set_reduce_motion(c.reduce_motion);
         s.set_system_reduce_motion(!self.sys_anim);
-        s.set_show_on(c.show_on);
-        s.set_pill_glance(c.pill_glance);
-        s.set_header_date(c.header_date);
-        s.set_featured(c.featured);
-        s.set_clock(c.clock);
-        s.set_keep_open(c.keep_open);
-        s.set_soft_shadow(c.soft_shadow);
-        s.set_media_rest(c.media_rest);
-        s.set_lyric_align(c.lyric_align);
-        s.set_pet_touch(c.pet_touch);
-        s.set_games(c.games);
-        s.set_games_online(c.games_online);
         s.set_online_built(!game::RELAY.is_empty());
-        s.set_mod_media(c.media);
-        s.set_mod_lyrics(c.lyrics);
-        s.set_lyric_lines(c.lyric_lines as f32);
-        s.set_mod_hud(c.hud);
-        s.set_mod_battery(c.battery);
-        s.set_mod_shelf(c.shelf);
-        s.set_mod_notifications(c.notifications);
-        s.set_mod_timer(c.timer);
-        s.set_mod_privacy(c.privacy);
-        s.set_mod_focus(c.focus);
-        s.set_mod_pet(c.pet);
-        s.set_pet_nearby(c.pet_nearby);
-        s.set_pet_share_name(c.pet_share_name);
         s.set_owner_name(self.owner.clone().into());
-        s.set_pet_peek(c.pet_peek);
-        s.set_pet_track(c.pet_track);
-        s.set_pet_name(c.pet_name.clone().into());
-        s.set_pet_skin(c.pet_skin);
-        s.set_pet_body(rgb(c.pet_body));
-        s.set_pet_eyes(rgb(c.pet_eyes));
-        const BODIES: [u32; 8] = [0x000000, 0x3a3a3a, 0xf5f5f5, 0xfc90bc, 0xf99f55, 0xd3b63b, 0x6fd087, 0x71bfff];
-        const EYES: [u32; 7] = [0xd3b63b, 0x000000, 0xffffff, 0xfc90bc, 0xf99f55, 0x6fd087, 0x71bfff];
-        s.set_pet_body_custom(!BODIES.contains(&c.pet_body));
-        s.set_pet_eyes_custom(!EYES.contains(&c.pet_eyes));
-        let eyes_desc = match pet::colors(c.pet_body, c.pet_eyes).3 {
-            None => "Also its mouth while eating.".to_string(),
-            Some(ring) => {
-                let other = if ring == 0 { "black" } else { "white" };
-                format!("Close to the body color, so the eyes get a thin {other} outline. Your color stays.")
-            }
-        };
-        s.set_pet_eyes_desc(eyes_desc.into());
-        s.set_pet_size(c.pet_size);
-        s.set_pet_moves(c.pet_moves);
-        s.set_pet_often(c.pet_often);
-        s.set_hide_fullscreen(c.hide_fullscreen);
-        s.set_saver_pause(c.saver_pause);
-        s.set_autostart(system::autostart_enabled());
         s.set_version(env!("CARGO_PKG_VERSION").into());
         s.set_has_live(true);
         s.set_has_lyrics(true);
@@ -3513,80 +3552,103 @@ impl App {
         };
         s.set_notifications_setup(setup);
         s.set_notifications_desc(desc.into());
-        s.set_update_check(c.update_check);
         self.push_update_ui();
     }
 
-    fn settings_changed(&mut self, key: &str) {
+    /// The island itself changed the pin or the edge (header pin, Esc, a drag,
+    /// Reset position): show that in Settings even with unsaved changes there.
+    fn push_island_settings(&self) {
+        self.push_settings();
+        if let Some(s) = &self.settings {
+            s.set_keep_open(self.cfg.keep_open);
+            s.set_edge(self.cfg.edge.index());
+        }
+    }
+
+    /// A control in Settings changed: it waits in the window until Save.
+    fn settings_edit(&mut self, key: &str) {
         let Some(s) = &self.settings else { return };
-        let c = &mut self.cfg;
-        c.width = s.get_width_px().clamp(160.0, 300.0);
-        let new_edge = Edge::from_index(s.get_edge());
-        if new_edge != c.edge {
-            c.edge = new_edge;
-            c.edge_pos = 0.5;
+        s.set_dirty(true);
+        s.set_save_state(0);
+        if key == "skin" && s.get_pet_skin() >= 0 {
+            // the color rows follow the preset
+            let (_, body, eyes) = pet::SKINS[(s.get_pet_skin() as usize).min(pet::SKINS.len() - 1)];
+            push_pet_colors(s, body, eyes);
         }
-        c.side_style = s.get_side_style();
-        c.hover_expand = s.get_hover_expand();
-        c.hover_delay = s.get_hover_delay().clamp(100.0, 1000.0) as u32;
-        c.theme = s.get_theme();
-        c.reduce_motion = s.get_reduce_motion();
-        c.show_on = s.get_show_on();
-        c.pill_glance = s.get_pill_glance();
-        c.header_date = s.get_header_date();
-        c.featured = s.get_featured().clamp(0, 4);
-        c.clock = s.get_clock().clamp(0, 2);
-        c.keep_open = s.get_keep_open();
-        c.soft_shadow = s.get_soft_shadow();
-        c.media_rest = s.get_media_rest();
-        c.lyric_align = s.get_lyric_align().clamp(0, 2);
-        c.pet_touch = s.get_pet_touch();
-        c.games = s.get_games();
-        c.games_online = s.get_games_online();
-        c.media = s.get_mod_media();
-        c.lyrics = s.get_mod_lyrics();
-        c.lyric_lines = s.get_lyric_lines().round() as i32;
-        c.hud = s.get_mod_hud();
-        c.battery = s.get_mod_battery();
-        c.shelf = s.get_mod_shelf();
-        c.notifications = s.get_mod_notifications();
-        c.timer = s.get_mod_timer();
-        c.privacy = s.get_mod_privacy();
-        c.focus = s.get_mod_focus();
-        c.pet = s.get_mod_pet();
-        c.pet_nearby = s.get_pet_nearby();
-        c.pet_share_name = s.get_pet_share_name();
-        c.pet_peek = s.get_pet_peek();
-        c.pet_track = s.get_pet_track();
-        c.pet_skin = s.get_pet_skin().clamp(-1, pet::SKINS.len() as i32 - 1);
-        if key == "skin" && c.pet_skin >= 0 {
-            let (_, body, eyes) = pet::SKINS[c.pet_skin as usize];
-            (c.pet_body, c.pet_eyes) = (body, eyes);
-        }
-        c.pet_size = s.get_pet_size().clamp(0, 2);
-        c.pet_moves = s.get_pet_moves().clamp(0, 2);
-        c.pet_often = s.get_pet_often().clamp(0, 2);
-        let name: String = s.get_pet_name().trim().chars().filter(|c| !c.is_control()).take(24).collect();
-        if !name.is_empty() {
-            c.pet_name = name;
-        }
-        c.hide_fullscreen = s.get_hide_fullscreen();
-        c.saver_pause = s.get_saver_pause();
-        c.update_check = s.get_update_check();
-        if key == "autostart" {
-            system::set_autostart(s.get_autostart());
-        }
-        if key == "theme" || key == "reduce" {
+        if key == "theme" || key == "defaults" {
+            // this window previews its theme right away
             let dark = self.settings_dark();
             s.set_dark(dark);
-            s.set_reduce_ui(self.reduce_motion());
             if let Some(w) = platform::native(s.window()) {
                 system::set_dark_title_bar(w.hwnd(), dark);
             }
         }
-        self.cfg.save();
-        self.flash_saved(key);
-        if key == "lyrics" && self.cfg.lyrics && self.lyrics.is_empty() {
+    }
+
+    /// Save: take everything from the window, write islo.ini, check it, apply.
+    fn save_settings(&mut self) {
+        let Some(s) = &self.settings else { return };
+        let old = self.cfg.clone();
+        let mut c = old.clone();
+        read_settings(s, &mut c);
+        c.hide_flyout = c.hud;
+        if s.get_autostart() != system::autostart_enabled() {
+            system::set_autostart(s.get_autostart());
+        }
+        let closing = s.get_close_warn();
+        self.cfg = c;
+        let result = self.cfg.try_save();
+        let Some(s) = &self.settings else { return };
+        match &result {
+            Ok(path) => {
+                s.set_dirty(false);
+                s.set_close_warn(false);
+                s.set_save_state(1);
+                s.set_save_msg(format!("Saved to {}", path.display()).into());
+            }
+            Err(e) => {
+                // still applied for now; the bar says why it isn't on disk
+                s.set_save_state(2);
+                s.set_save_msg(e.as_str().into());
+            }
+        }
+        self.apply_changes(&old);
+        if closing && result.is_ok() {
+            self.close_settings();
+        }
+    }
+
+    /// Discard: put the saved settings back into the window.
+    fn discard_settings(&mut self) {
+        let Some(s) = &self.settings else { return };
+        let closing = s.get_close_warn();
+        s.set_dirty(false);
+        s.set_close_warn(false);
+        s.set_save_state(0);
+        s.set_save_msg("".into());
+        self.push_settings();
+        if let Some(w) = self.settings.as_ref().and_then(|s| platform::native(s.window())) {
+            system::set_dark_title_bar(w.hwnd(), self.settings_dark());
+        }
+        if closing {
+            self.close_settings();
+        }
+    }
+
+    /// After a save: do what each changed setting needs, then refresh everything.
+    fn apply_changes(&mut self, old: &Config) {
+        let c = self.cfg.clone();
+        if c.theme != old.theme || c.reduce_motion != old.reduce_motion {
+            if let Some(s) = &self.settings {
+                let dark = self.settings_dark();
+                s.set_dark(dark);
+                s.set_reduce_ui(self.reduce_motion());
+                if let Some(w) = platform::native(s.window()) {
+                    system::set_dark_title_bar(w.hwnd(), dark);
+                }
+            }
+        }
+        if c.lyrics && !old.lyrics && self.lyrics.is_empty() {
             // refetch for the current song
             self.lyrics_key.clear();
             if let Some(m) = &self.media {
@@ -3594,27 +3656,25 @@ impl App {
                 self.on_media(Some(info));
             }
         }
-        if key == "lines" {
+        if c.lyric_lines != old.lyric_lines {
             self.lyric_idx = usize::MAX;
         }
-        if key == "update_check" {
+        if c.update_check != old.update_check {
             self.schedule_update_checks();
         }
-        if matches!(key, "skin" | "petsize") {
+        let looks = (c.pet_skin, c.pet_body, c.pet_eyes, c.pet_size) != (old.pet_skin, old.pet_body, old.pet_eyes, old.pet_size);
+        if looks {
             for v in &self.views {
                 apply_skin(&v.island, &self.cfg);
             }
         }
-        if key == "skin" {
-            self.push_settings(); // the color rows follow the preset
-        }
-        if matches!(key, "peek" | "moves" | "often" | "skin" | "petsize") {
+        if looks || (c.pet_peek, c.pet_moves, c.pet_often) != (old.pet_peek, old.pet_moves, old.pet_often) {
             // show the change: Mochi comes out in a moment (if the island is quiet)
             self.peek_timer.start(TimerMode::SingleShot, Duration::from_millis(1200), || {
                 with_app(|a| a.start_peek());
             });
         }
-        if key == "notifications" && self.cfg.notifications {
+        if c.notifications && !old.notifications {
             if self.notify_state == 2 {
                 self.ask_notify_access();
             } else {
@@ -3622,14 +3682,14 @@ impl App {
                 self.notify_ask = true;
             }
         }
-        if matches!(key, "clock" | "glance" | "hdate") {
-            self.refresh_date(); // texts now, and whether a minute tick is needed
+        if (c.clock, c.pill_glance, c.header_date) != (old.clock, old.pill_glance, old.header_date) {
+            self.refresh_date(); // whether a minute tick is needed
+            // refresh_date only pushes when the time or date itself changed; the
+            // format did, so the pill and the header need the new text now
+            self.push_clock();
         }
-        if key == "rest" {
-            self.retarget();
-        }
-        if key == "pin" {
-            if self.cfg.keep_open {
+        if c.keep_open != old.keep_open {
+            if c.keep_open {
                 if self.views.first().is_some_and(|v| !v.expanded) {
                     self.expand(0);
                 }
@@ -3641,11 +3701,11 @@ impl App {
                 }
             }
         }
-        if (key == "games" || key == "online") && (!self.cfg.games || !self.cfg.games_online) && self.game_mode == 1 {
+        if (!c.games || !c.games_online) && self.game_mode == 1 {
             self.game_leave();
             self.game_mode_set(0);
         }
-        if key == "games" && !self.cfg.games {
+        if !c.games {
             for v in &mut self.views {
                 if v.panel == P_GAME {
                     v.panel = P_MEDIA;
@@ -3656,6 +3716,8 @@ impl App {
         self.lyrics_sync();
         self.apply_config();
         self.update_game_ui();
+        self.push_settings();
+        self.retarget();
     }
 
     /// Show Windows' consent prompt, then start listening.
@@ -3703,30 +3765,26 @@ impl App {
         });
     }
 
-    /// Settings > Pet > Body color (0) or Eye color (1).
+    /// Settings > Pet > Body color (0) or Eye color (1): into the window, like
+    /// every other setting (Save applies it).
     fn set_pet_color(&mut self, which: i32, c: u32) {
+        let Some(s) = &self.settings else { return };
+        let (mut body, mut eyes) = (rgb_u32(s.get_pet_body()), rgb_u32(s.get_pet_eyes()));
         if which == 0 {
-            self.cfg.pet_body = c;
+            body = c;
         } else {
-            self.cfg.pet_eyes = c;
+            eyes = c;
         }
-        self.cfg.pet_skin = pet::preset_of(self.cfg.pet_body, self.cfg.pet_eyes);
-        self.cfg.save();
-        for v in &self.views {
-            apply_skin(&v.island, &self.cfg);
-        }
-        self.push_settings();
-        self.flash_saved(if which == 0 { "petbody" } else { "peteyes" });
-        // show it off: Mochi comes out in a moment (if the island is quiet)
-        self.peek_timer.start(TimerMode::SingleShot, Duration::from_millis(1200), || {
-            with_app(|a| a.start_peek());
-        });
+        push_pet_colors(s, body, eyes);
+        s.set_pet_skin(pet::preset_of(body, eyes));
+        self.settings_edit(if which == 0 { "petbody" } else { "peteyes" });
     }
 
     /// "Custom…": Windows' color picker, starting from the current color.
     fn pick_pet_color(&self, which: i32) {
-        let Some(hwnd) = self.settings.as_ref().and_then(|s| platform::native(s.window())).map(|w| w.hwnd()) else { return };
-        let initial = if which == 0 { self.cfg.pet_body } else { self.cfg.pet_eyes };
+        let Some(s) = &self.settings else { return };
+        let Some(hwnd) = platform::native(s.window()).map(|w| w.hwnd()) else { return };
+        let initial = rgb_u32(if which == 0 { s.get_pet_body() } else { s.get_pet_eyes() });
         system::choose_color(hwnd, initial, move |picked| {
             if let Some(c) = picked {
                 post(move |a| a.set_pet_color(which, c));
@@ -3998,6 +4056,140 @@ fn quit() {
     system::tray_remove(host);
     system::unregister_fullscreen_watch(host);
     let _ = slint::quit_event_loop();
+}
+
+/// The clock text for `room` px of the open header: the longest form of the
+/// chosen setting that fits ("Wed 28 Oct" loses its weekday first).
+fn fit_clock(clock: i32, time: &str, date: &str, room: f32) -> String {
+    let width = |t: &str| t.chars().count() as f32 * 6.2 + 4.0;
+    let short_date = date.split_once(' ').map_or(date, |(_, rest)| rest);
+    let tries = match clock {
+        0 => vec![time.to_string()],
+        2 => vec![date.to_string(), short_date.to_string()],
+        _ => vec![format!("{time} · {date}"), format!("{time} · {short_date}"), time.to_string()],
+    };
+    tries.into_iter().find(|t| width(t) <= room).unwrap_or_default()
+}
+
+/// Every setting into the settings window's controls.
+fn fill_settings(s: &SettingsWindow, c: &Config) {
+    s.set_width_px(c.width);
+    s.set_edge(c.edge.index());
+    s.set_side_style(c.side_style);
+    s.set_hover_expand(c.hover_expand);
+    s.set_hover_delay(c.hover_delay as f32);
+    s.set_theme(c.theme);
+    s.set_reduce_motion(c.reduce_motion);
+    s.set_show_on(c.show_on);
+    s.set_pill_glance(c.pill_glance);
+    s.set_header_date(c.header_date);
+    s.set_featured(c.featured);
+    s.set_clock(c.clock);
+    s.set_keep_open(c.keep_open);
+    s.set_soft_shadow(c.soft_shadow);
+    s.set_media_rest(c.media_rest);
+    s.set_lyric_align(c.lyric_align);
+    s.set_pet_touch(c.pet_touch);
+    s.set_games(c.games);
+    s.set_games_online(c.games_online);
+    s.set_mod_media(c.media);
+    s.set_mod_lyrics(c.lyrics);
+    s.set_lyric_lines(c.lyric_lines as f32);
+    s.set_mod_hud(c.hud);
+    s.set_mod_battery(c.battery);
+    s.set_mod_shelf(c.shelf);
+    s.set_mod_notifications(c.notifications);
+    s.set_mod_timer(c.timer);
+    s.set_mod_privacy(c.privacy);
+    s.set_mod_focus(c.focus);
+    s.set_mod_pet(c.pet);
+    s.set_pet_nearby(c.pet_nearby);
+    s.set_pet_share_name(c.pet_share_name);
+    s.set_pet_peek(c.pet_peek);
+    s.set_pet_track(c.pet_track);
+    s.set_pet_name(c.pet_name.clone().into());
+    s.set_pet_skin(c.pet_skin);
+    push_pet_colors(s, c.pet_body, c.pet_eyes);
+    s.set_pet_size(c.pet_size);
+    s.set_pet_moves(c.pet_moves);
+    s.set_pet_often(c.pet_often);
+    s.set_hide_fullscreen(c.hide_fullscreen);
+    s.set_saver_pause(c.saver_pause);
+    s.set_autostart(system::autostart_enabled());
+    s.set_update_check(c.update_check);
+}
+
+/// Mochi's body and eye colors into the settings window, with the hints that go with them.
+fn push_pet_colors(s: &SettingsWindow, body: u32, eyes: u32) {
+    const BODIES: [u32; 8] = [0x000000, 0x3a3a3a, 0xf5f5f5, 0xfc90bc, 0xf99f55, 0xd3b63b, 0x6fd087, 0x71bfff];
+    const EYES: [u32; 7] = [0xd3b63b, 0x000000, 0xffffff, 0xfc90bc, 0xf99f55, 0x6fd087, 0x71bfff];
+    s.set_pet_body(rgb(body));
+    s.set_pet_eyes(rgb(eyes));
+    s.set_pet_body_custom(!BODIES.contains(&body));
+    s.set_pet_eyes_custom(!EYES.contains(&eyes));
+    let eyes_desc = match pet::colors(body, eyes).3 {
+        None => "Also its mouth while eating.".to_string(),
+        Some(ring) => {
+            let other = if ring == 0 { "black" } else { "white" };
+            format!("Close to the body color, so the eyes get a thin {other} outline. Your color stays.")
+        }
+    };
+    s.set_pet_eyes_desc(eyes_desc.into());
+}
+
+/// Everything the settings window shows, into a config (Save).
+fn read_settings(s: &SettingsWindow, c: &mut Config) {
+    c.width = s.get_width_px().clamp(160.0, 300.0);
+    let new_edge = Edge::from_index(s.get_edge());
+    if new_edge != c.edge {
+        c.edge = new_edge;
+        c.edge_pos = 0.5;
+    }
+    c.side_style = s.get_side_style().clamp(0, 2);
+    c.hover_expand = s.get_hover_expand();
+    c.hover_delay = s.get_hover_delay().clamp(100.0, 1000.0) as u32;
+    c.theme = s.get_theme().clamp(0, 2);
+    c.reduce_motion = s.get_reduce_motion();
+    c.show_on = s.get_show_on().clamp(0, 2);
+    c.pill_glance = s.get_pill_glance();
+    c.header_date = s.get_header_date();
+    c.featured = s.get_featured().clamp(0, 4);
+    c.clock = s.get_clock().clamp(0, 2);
+    c.keep_open = s.get_keep_open();
+    c.soft_shadow = s.get_soft_shadow();
+    c.media_rest = s.get_media_rest();
+    c.lyric_align = s.get_lyric_align().clamp(0, 2);
+    c.pet_touch = s.get_pet_touch();
+    c.games = s.get_games();
+    c.games_online = s.get_games_online();
+    c.media = s.get_mod_media();
+    c.lyrics = s.get_mod_lyrics();
+    c.lyric_lines = (s.get_lyric_lines().round() as i32).clamp(1, 10);
+    c.hud = s.get_mod_hud();
+    c.battery = s.get_mod_battery();
+    c.shelf = s.get_mod_shelf();
+    c.notifications = s.get_mod_notifications();
+    c.timer = s.get_mod_timer();
+    c.privacy = s.get_mod_privacy();
+    c.focus = s.get_mod_focus();
+    c.pet = s.get_mod_pet();
+    c.pet_nearby = s.get_pet_nearby();
+    c.pet_share_name = s.get_pet_share_name();
+    c.pet_peek = s.get_pet_peek();
+    c.pet_track = s.get_pet_track();
+    c.pet_skin = s.get_pet_skin().clamp(-1, pet::SKINS.len() as i32 - 1);
+    c.pet_body = rgb_u32(s.get_pet_body());
+    c.pet_eyes = rgb_u32(s.get_pet_eyes());
+    c.pet_size = s.get_pet_size().clamp(0, 2);
+    c.pet_moves = s.get_pet_moves().clamp(0, 2);
+    c.pet_often = s.get_pet_often().clamp(0, 2);
+    let name: String = s.get_pet_name().trim().chars().filter(|c| !c.is_control()).take(24).collect();
+    if !name.is_empty() {
+        c.pet_name = name;
+    }
+    c.hide_fullscreen = s.get_hide_fullscreen();
+    c.saver_pause = s.get_saver_pause();
+    c.update_check = s.get_update_check();
 }
 
 fn rgb(c: u32) -> slint::Color {
@@ -4347,6 +4539,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         squish_timer: Timer::default(),
         hearts_timer: Timer::default(),
         carrying: false,
+        carry_watch: Timer::default(),
         game_board: [0; 9],
         game_over: None,
         game_thinking: false,
@@ -4486,4 +4679,100 @@ fn clamp_safe(v: f32, lo: f32, hi: f32) -> f32 {
         return lo;
     }
     v.clamp(lo, hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+    use slint::platform::{Platform, WindowAdapter};
+
+    thread_local! {
+        static LAST: RefCell<Option<Rc<MinimalSoftwareWindow>>> = const { RefCell::new(None) };
+    }
+
+    struct TestPlatform;
+    impl Platform for TestPlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+            let w = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+            LAST.with(|l| *l.borrow_mut() = Some(w.clone()));
+            Ok(w)
+        }
+    }
+
+    /// Lay out and paint once, which builds the controls of the visible page.
+    fn paint(w: &MinimalSoftwareWindow) {
+        use slint::platform::software_renderer::PremultipliedRgbaColor;
+        let (pw, ph) = (1000u32, 720u32);
+        w.set_size(slint::PhysicalSize::new(pw, ph));
+        slint::platform::update_timers_and_animations();
+        w.request_redraw();
+        let mut buf = vec![PremultipliedRgbaColor::default(); (pw * ph) as usize];
+        w.draw_if_needed(|r| {
+            r.render(&mut buf, pw as usize);
+        });
+    }
+
+    /// Every clock choice shows something in the header, shortening as tabs take the room.
+    #[test]
+    fn header_clock_shortens_instead_of_vanishing() {
+        let (t, d) = ("23:13", "Wed 28 Oct");
+        assert_eq!(fit_clock(1, t, d, 200.0), "23:13 · Wed 28 Oct");
+        assert_eq!(fit_clock(1, t, d, 100.0), "23:13 · 28 Oct");
+        assert_eq!(fit_clock(1, t, d, 50.0), "23:13");
+        assert_eq!(fit_clock(2, t, d, 100.0), "Wed 28 Oct");
+        assert_eq!(fit_clock(2, t, d, 62.0), "28 Oct"); // 7 tabs: the full date doesn't fit
+        assert_eq!(fit_clock(0, t, d, 62.0), "23:13");
+        assert_eq!(fit_clock(0, t, d, 10.0), "");
+    }
+
+    /// Settings: what goes into the window comes back out on Save, also after
+    /// switching pages (each page's controls are rebuilt when it's shown).
+    #[test]
+    fn settings_window_round_trip() {
+        let _ = slint::platform::set_platform(Box::new(TestPlatform));
+        let s = SettingsWindow::new().expect("settings window");
+        let mut c = Config {
+            width: 270.0,
+            edge: Edge::Right,
+            side_style: 1,
+            hover_expand: false,
+            hover_delay: 750,
+            theme: 1,
+            show_on: 1,
+            featured: 2,
+            clock: 0,
+            keep_open: true,
+            soft_shadow: false,
+            media_rest: false,
+            lyric_align: 1,
+            lyrics: false,
+            lyric_lines: 6,
+            pet_name: "Bean".into(),
+            pet_skin: -1,
+            pet_body: 0x123456,
+            pet_eyes: 0xabcdef,
+            pet_size: 2,
+            pet_moves: 1,
+            pet_often: 0,
+            games_online: false,
+            update_check: false,
+            ..Config::default()
+        };
+        c.hide_flyout = c.hud;
+        let w = LAST.with(|l| l.borrow().clone()).expect("window adapter");
+        paint(&w);
+        fill_settings(&s, &c);
+        for page in [0, 1, 2, 3, 4, 1, 2, 0] {
+            s.set_page(page);
+            paint(&w);
+        }
+        let mut back = Config::default();
+        back.edge_pos = c.edge_pos;
+        back.monitor = c.monitor;
+        back.pet_fed = c.pet_fed;
+        read_settings(&s, &mut back);
+        back.edge_pos = c.edge_pos; // a new edge recenters; that's expected
+        assert_eq!(back, c);
+    }
 }

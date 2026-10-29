@@ -42,6 +42,7 @@ mod system;
 #[cfg(windows)]
 mod update;
 
+mod shadow;
 #[cfg(not(windows))]
 mod snapshot;
 

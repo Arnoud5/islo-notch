@@ -278,21 +278,24 @@ component NoteStack inherits Rectangle {
 }
 
 // Round tab arrow over the content's edge; fades in while the pointer is on the island.
+// It sits at the same spot on every tab, and at the first or last tab it only dims
+// (still catching the click), so clicking fast never lands on what's underneath.
 component NavArrow inherits Rectangle {
     in property <bool> left;
     in property <bool> shown;
+    in property <bool> enabled: true; // false at the first (left) or last (right) tab
     in property <bool> reduce-motion;
     callback clicked;
     width: 26px;
     height: 26px;
     border-radius: 13px;
-    background: ta.pressed ? #3a3a3a : ta.has-hover ? T.tile-hover : #1c1c1ce6;
+    background: ta.pressed && root.enabled ? #3a3a3a : ta.has-hover && root.enabled ? T.tile-hover : #1c1c1ce6;
     animate background { duration: 90ms; }
-    opacity: root.shown ? 1 : 0;
+    opacity: !root.shown ? 0 : root.enabled ? 1 : 0.35;
     animate opacity { duration: root.reduce-motion ? 0ms : 180ms; }
     visible: self.opacity > 0.01;
     Path {
-        x: 6px + (ta.has-hover && !root.reduce-motion ? (root.left ? -1.5px : 1.5px) : 0px);
+        x: 6px + (ta.has-hover && root.enabled && !root.reduce-motion ? (root.left ? -1.5px : 1.5px) : 0px);
         animate x { duration: 180ms; easing: ease-out; }
         y: 6px;
         width: 14px;
@@ -307,7 +310,9 @@ component NavArrow inherits Rectangle {
         commands: root.left ? "M14 6 L8 12 L14 18" : "M10 6 L16 12 L10 18";
     }
     ta := TouchArea {
-        clicked => { root.clicked(); }
+        clicked => {
+            if (root.enabled) { root.clicked(); }
+        }
     }
 }
 
@@ -329,6 +334,40 @@ component Stroker inherits TouchArea {
             self.run += abs(self.mouse-x - self.last-x);
             self.last-x = self.mouse-x;
         }
+    }
+}
+
+// Mochi under the pointer, wherever it sits (peeking, in the pill, in the Pet tab):
+// stroke it to pet it, press and drag to carry it, click to poke it. Positions are
+// in window coordinates. Being on top of the island's own hit area, a drag here
+// carries Mochi instead of moving the island.
+component PetGrab inherits Stroker {
+    in property <bool> can-carry: true;
+    callback carry(length, length);
+    callback put-down(length, length);
+    callback poked();
+    property <bool> carried;
+    pointer-event(e) => {
+        if (e.kind == PointerEventKind.down) {
+            self.carried = false;
+        }
+        // (carried stays set until the next press, so the release isn't also a poke)
+        if (e.kind == PointerEventKind.up && self.carried) {
+            root.put-down(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+        }
+    }
+    moved => {
+        if (self.pressed && root.can-carry) {
+            if (!self.carried && abs(self.mouse-x - self.pressed-x) + abs(self.mouse-y - self.pressed-y) > 5px) {
+                self.carried = true;
+            }
+            if (self.carried) {
+                root.carry(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+    clicked => {
+        if (!self.carried) { root.poked(); }
     }
 }
 
@@ -568,6 +607,8 @@ export component Island inherits Window {
     in property <length> peek-fx: 0px;
     in property <length> peek-fy: 0px;
     in property <bool> peek-landing: false;
+    // picked up out of the pill or the Pet tab: Mochi is outside, so those spots stay empty
+    in property <bool> pet-out: false;
     in property <bool> pet-touch: true;
     callback pet-stroke();
     callback pet-carry(length, length);
@@ -711,21 +752,28 @@ export component Island inherits Window {
     property <color> battery-tint: root.charging ? T.green : root.battery-level <= 20 ? T.red : T.ink;
 
     // ================= soft shadow =================
-    // The software renderer has no blur, so the shadow is four faint copies of
-    // the pill, each a little larger, falling away from the screen edge.
+    // The software renderer can't blur, so Rust draws a blurred shadow image
+    // once (src/shadow.rs) and Slint stretches it around the pill (nine-slice:
+    // the corners stay 1:1, the straight middle stretches). There's one image
+    // per corner radius (compact 14, open 30); they cross-fade while the island
+    // springs between them. The side against the screen edge is pushed off
+    // screen, and the whole shadow drops 2 px away from that edge.
+    in property <image> shadow-compact;
+    in property <image> shadow-open;
+    property <length> sh-pad: 16px; // = PAD in src/shadow.rs
+    property <length> sh-drop: 2px;
+    property <float> sh-open: clamp((root.radius - 14px) / 16px, 0, 1);
     if root.soft-shadow && root.edge != 4 && !(root.tab && root.side-style == 1) : Rectangle {
-        for k in [1, 2, 3, 4] : Rectangle {
-            property <length> e: k * 3.5px;
-            property <length> drop: 2px;
-            x: pill.x - (root.edge == 2 ? 0px : e) + (root.edge == 2 ? 0px : 0px);
-            y: pill.y - (root.edge == 0 ? 0px : root.edge == 1 ? e + drop : e);
-            width: pill.width + (root.edge == 2 || root.edge == 3 ? e + drop : 2 * e);
-            height: pill.height + (root.edge == 0 || root.edge == 1 ? e + drop : 2 * e);
-            border-top-left-radius: root.edge == 0 || root.edge == 2 ? 0px : root.radius + e;
-            border-top-right-radius: root.edge == 0 || root.edge == 3 ? 0px : root.radius + e;
-            border-bottom-left-radius: root.edge == 1 || root.edge == 2 ? 0px : root.radius + e;
-            border-bottom-right-radius: root.edge == 1 || root.edge == 3 ? 0px : root.radius + e;
-            background: #00000012;
+        for r in [14, 30] : Image {
+            property <length> back: r * 1px; // how far past the screen edge the flat side goes
+            property <float> weight: r == 14 ? 1 - root.sh-open : root.sh-open;
+            visible: self.weight > 0.02;
+            source: r == 14 ? root.shadow-compact : root.shadow-open;
+            colorize: Colors.black.with-alpha(self.weight);
+            x: pill.x - root.sh-pad - (root.edge == 2 ? self.back - root.sh-drop : root.edge == 3 ? root.sh-drop : 0px);
+            y: pill.y - root.sh-pad - (root.edge == 0 ? self.back - root.sh-drop : root.edge == 1 ? root.sh-drop : 0px);
+            width: pill.width + 2 * root.sh-pad + (root.edge == 2 || root.edge == 3 ? self.back : 0px);
+            height: pill.height + 2 * root.sh-pad + (root.edge == 0 || root.edge == 1 ? self.back : 0px);
         }
     }
 
@@ -805,6 +853,8 @@ export component Island inherits Window {
             width: parent.width;
             height: parent.height;
             orient: root.peek-free ? 0 : root.peek-side == 1 ? 1 : root.peek-side == 2 ? 2 : root.peek-side == 3 ? 3 : 0;
+            // while carried, the copy above the island shows instead (this one is under it)
+            opacity: root.peek-free ? 0 : 1;
             head: PetSkin.head;
             eyes: PetSkin.eyes;
             awake: true;
@@ -821,30 +871,12 @@ export component Island inherits Window {
             eye-ring: PetSkin.eye-ring;
         }
         // Click: poke (it hides). Stroke back and forth: pet it. Press and drag: carry it.
-        peek-ta := Stroker {
-            property <bool> carried;
+        peek-ta := PetGrab {
+            can-carry: root.pet-touch;
             stroke => { if (root.pet-touch) { root.pet-stroke(); } }
-            pointer-event(e) => {
-                if (e.kind == PointerEventKind.down) {
-                    self.carried = false;
-                }
-                if (e.kind == PointerEventKind.up && self.carried) {
-                    root.pet-drop(peek.x + self.mouse-x, peek.y + self.mouse-y);
-                }
-            }
-            moved => {
-                if (self.pressed && root.pet-touch) {
-                    if (!self.carried && abs(self.mouse-x - self.pressed-x) + abs(self.mouse-y - self.pressed-y) > 5px) {
-                        self.carried = true;
-                    }
-                    if (self.carried) {
-                        root.pet-carry(peek.x + self.mouse-x, peek.y + self.mouse-y);
-                    }
-                }
-            }
-            clicked => {
-                if (!self.carried) { root.peek-poked(); }
-            }
+            carry(x, y) => { root.pet-carry(x, y); }
+            put-down(x, y) => { root.pet-drop(x, y); }
+            poked => { root.peek-poked(); }
         }
     }
 
@@ -1001,9 +1033,12 @@ export component Island inherits Window {
                         width: 20px;
                         height: 20px;
                         awake: root.pet-awake;
-                    }
-                    if root.featured == 3 && root.pet-touch : Stroker {
-                        stroke => { root.pet-stroke(); }
+                        opacity: root.pet-out ? 0 : 1;
+                        if root.pet-touch : PetGrab {
+                            stroke => { root.pet-stroke(); }
+                            carry(x, y) => { root.pet-carry(x, y); }
+                            put-down(x, y) => { root.pet-drop(x, y); }
+                        }
                     }
                     if root.featured == 4 : Icon {
                         d: Icons.moon;
@@ -1289,7 +1324,18 @@ export component Island inherits Window {
                 alignment: space-between;
                 HorizontalLayout {
                     spacing: 6px;
-                    if !root.pet-away : PetGlyph { y: 8px; width: 20px; height: 20px; awake: root.pet-awake || root.compact-kind == 15; }
+                    if !root.pet-away : PetGlyph {
+                        y: 8px;
+                        width: 20px;
+                        height: 20px;
+                        awake: root.pet-awake || root.compact-kind == 15;
+                        opacity: root.pet-out ? 0 : 1;
+                        if root.pet-touch : PetGrab {
+                            stroke => { root.pet-stroke(); }
+                            carry(x, y) => { root.pet-carry(x, y); }
+                            put-down(x, y) => { root.pet-drop(x, y); }
+                        }
+                    }
                     if root.visitor != "" : PetGlyph { y: 8px; width: 20px; height: 20px; awake: true; head: T.rose; tint: #000000; look: false; }
                     Label { text: root.compact-kind == 15 ? root.nearby-text : root.visitor != "" ? root.visitor : root.pet-name; overflow: elide; }
                 }
@@ -1761,14 +1807,17 @@ export component Island inherits Window {
                         awake: !root.pet-away;
                         bob: root.pet-bob;
                         animate bob { duration: root.reduce-motion ? 0ms : 280ms; easing: ease-in-out; }
-                        opacity: root.pet-away ? 0.35 : 1;
+                        opacity: root.pet-out ? 0 : root.pet-away ? 0.35 : 1;
                     }
-                    if root.pet-touch && !root.pet-away : Stroker {
+                    // press and drag Mochi out of the tab to carry it around the island
+                    if root.pet-touch && !root.pet-away : PetGrab {
                         x: 0;
                         y: 0;
                         width: 48px;
                         height: 48px;
                         stroke => { root.pet-stroke(); }
+                        carry(x, y) => { root.pet-carry(x, y); }
+                        put-down(x, y) => { root.pet-drop(x, y); }
                     }
                     // Feed: a fish treat drops from above into Mochi's mouth
                     Path {
@@ -2595,21 +2644,29 @@ export component Island inherits Window {
                 }
             }
 
-            // tab arrows: over the content's edges, while the pointer is on the island
+            // tab arrows: over the content's edges, while the pointer is on the island.
+            // Tabs differ in height, so they're pinned to the island's fixed side (top,
+            // bottom, or the middle on the left/right edge), not to the content: the
+            // arrow stays under the pointer while you click through the tabs.
+            property <length> arrow-y: root.edge == 1 ? self.height - 28px - 13px
+                : root.edge == 2 || root.edge == 3 ? self.height / 2 - 13px
+                : content.y + 28px - 13px;
             if root.panels.length > 1 : NavArrow {
                 left: true;
                 x: -13px;
-                y: content.y + min(content.height, 120px) / 2 - 13px;
+                y: expanded.arrow-y;
                 reduce-motion: root.reduce-motion;
-                shown: root.hovering && root.panel-index > 0;
+                shown: root.hovering;
+                enabled: root.panel-index > 0;
                 clicked => { root.tab-step(-1); }
             }
             if root.panels.length > 1 : NavArrow {
                 left: false;
                 x: parent.width - 13px;
-                y: content.y + min(content.height, 120px) / 2 - 13px;
+                y: expanded.arrow-y;
                 reduce-motion: root.reduce-motion;
-                shown: root.hovering && root.panel-index < root.panels.length - 1;
+                shown: root.hovering;
+                enabled: root.panel-index < root.panels.length - 1;
                 clicked => { root.tab-step(1); }
             }
             // volume changed while open: a small level bar at the bottom for a moment
@@ -2645,5 +2702,26 @@ export component Island inherits Window {
                 }
             }
         }
+    }
+
+    // Mochi while you carry it: drawn last, so it's above the island when you
+    // drag it across (the peeking one sits under the island's edge).
+    if root.peek-free : Mochi {
+        x: root.peek-fx - PetSkin.size / 2;
+        y: root.peek-fy - PetSkin.size / 2;
+        width: PetSkin.size;
+        height: PetSkin.size;
+        head: PetSkin.head;
+        eyes: PetSkin.eyes;
+        awake: true;
+        look-x: PetSkin.look-x;
+        look-y: PetSkin.look-y;
+        blink: PetSkin.blink;
+        face: PetSkin.face;
+        lively: PetSkin.lively;
+        mouth: PetSkin.mouth;
+        hearts: PetSkin.hearts;
+        stretch: 1 + PetSkin.jolt;
+        eye-ring: PetSkin.eye-ring;
     }
 }

@@ -243,7 +243,15 @@ impl Config {
         c
     }
 
+    /// Write islo.ini, ignoring errors (for the island's own small changes).
     pub fn save(&self) {
+        let _ = self.try_save();
+    }
+
+    /// Write islo.ini and read it back, so Settings can tell whether it really
+    /// stuck. Goes through islo.ini.tmp and a rename, so a crash or a full disk
+    /// mid-write never leaves half a file.
+    pub fn try_save(&self) -> Result<PathBuf, String> {
         let b = |v: bool| if v { 1 } else { 0 };
         let text = format!(
             "# Islo settings\n\
@@ -305,6 +313,95 @@ impl Config {
                 b(self.games_online),
                 self.game_level,
             );
-        let _ = std::fs::write(Self::path(), text);
+        let path = Self::path();
+        let tmp = path.with_extension("ini.tmp");
+        let fail = |e: std::io::Error| format!("Couldn't save to {}: {e}", path.display());
+        std::fs::write(&tmp, &text).map_err(fail)?;
+        if std::fs::rename(&tmp, &path).is_err() {
+            // rename can fail while another program holds islo.ini open: write in place
+            let _ = std::fs::remove_file(&tmp);
+            std::fs::write(&path, &text).map_err(fail)?;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(back) if back == text => Ok(path),
+            Ok(_) => Err(format!("{} changed while saving. Try again.", path.display())),
+            Err(e) => Err(fail(e)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every setting differs from the default, so a field that save() or load()
+    /// forgets shows up as a mismatch.
+    fn all_changed() -> Config {
+        Config {
+            width: 250.0,
+            edge: Edge::Bottom,
+            edge_pos: 0.25,
+            side_style: 2,
+            hover_expand: false,
+            hover_delay: 650,
+            theme: 2,
+            reduce_motion: true,
+            show_on: 2,
+            monitor: 1,
+            pill_glance: false,
+            header_date: false,
+            featured: 4,
+            media: false,
+            lyrics: false,
+            lyric_lines: 7,
+            hud: false,
+            hide_flyout: false,
+            battery: false,
+            shelf: false,
+            notifications: false,
+            timer: false,
+            privacy: false,
+            focus: false,
+            pet: false,
+            pet_name: "Bean".into(),
+            pet_nearby: false,
+            pet_peek: false,
+            pet_track: false,
+            pet_skin: -1,
+            pet_body: 0x123456,
+            pet_eyes: 0xabcdef,
+            pet_size: 2,
+            pet_moves: 0,
+            pet_often: 2,
+            pet_share_name: true,
+            pet_fed: 1_700_000_000,
+            hide_fullscreen: false,
+            saver_pause: false,
+            update_check: false,
+            clock: 2,
+            keep_open: true,
+            soft_shadow: false,
+            media_rest: false,
+            lyric_align: 2,
+            pet_touch: false,
+            games: false,
+            games_online: false,
+            game_level: 0,
+        }
+    }
+
+    #[test]
+    fn every_setting_survives_save_and_load() {
+        let c = all_changed();
+        assert_ne!(c, Config::default());
+        let path = c.try_save().expect("save");
+        assert!(!path.with_extension("ini.tmp").exists(), "temp file left behind");
+        assert_eq!(Config::load(), c);
+        // and back to the defaults (every bool flips the other way)
+        let d = Config::default();
+        d.try_save().expect("save defaults");
+        let back = Config::load();
+        assert_eq!(back, d);
+        let _ = std::fs::remove_file(path);
     }
 }

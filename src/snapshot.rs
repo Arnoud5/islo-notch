@@ -136,6 +136,9 @@ pub fn run() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "snapshots".into());
     std::fs::create_dir_all(&out).unwrap();
     let island = Island::new().unwrap();
+    let (sc, so) = crate::shadow::images();
+    island.set_shadow_compact(sc);
+    island.set_shadow_open(so);
     let settings = SettingsWindow::new().unwrap();
     let (iw, sw) = WINDOWS.with(|v| (v.borrow()[0].clone(), v.borrow()[1].clone()));
     island.set_reduce_motion(true);
@@ -293,6 +296,14 @@ pub fn run() {
     i.set_clock_text("15:31 · Wed 28 Oct".into()); i.set_note_count(0);
     shape(i, 236.0, 36.0, 14.0);
     render(&iw, w2, 120, 2.0, &format!("{out}/60-glance-clock-date.png"), bg);
+    // soft shadow over a lighter "wallpaper", compact / mid-spring / open
+    let sky = [96, 128, 168];
+    render(&iw, w2, 120, 2.0, &format!("{out}/78-shadow-compact.png"), sky);
+    shape(i, 300.0, 90.0, 22.0);
+    render(&iw, w2, 160, 2.0, &format!("{out}/79-shadow-mid.png"), sky);
+    shape(i, 380.0, 150.0, 30.0);
+    render(&iw, w2, 220, 2.0, &format!("{out}/80-shadow-open.png"), sky);
+    shape(i, 236.0, 36.0, 14.0);
     i.set_clock_text("15:31".into());
     shape(i, 200.0, 36.0, 14.0);
     render(&iw, w2, 120, 2.0, &format!("{out}/61-glance-clock.png"), bg);

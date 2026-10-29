@@ -153,25 +153,27 @@ component Segmented inherits HorizontalLayout {
 component Button inherits Rectangle {
     in property <string> text;
     in property <bool> primary: false;
+    in property <bool> enabled: true;
     callback clicked();
     height: 32px;
     width: lbl.preferred-width + 24px;
     border-radius: 4px;
-    border-width: primary ? 0px : 1px;
-    border-color: S.border;
-    background: primary ? S.primary : ta.has-hover ? S.surface-300 : S.surface-200;
+    border-width: primary && enabled ? 0px : 1px;
+    border-color: enabled ? S.border : S.hairline;
+    background: !enabled ? S.surface-300 : primary ? (ta.pressed ? S.ink-muted : S.primary) : ta.has-hover ? S.surface-300 : S.surface-200;
     animate background { duration: S.instant; }
     lbl := Text {
         text: root.text;
         font-size: 14px;
         font-weight: 600;
-        color: root.primary ? S.on-primary : S.ink;
+        color: !root.enabled ? S.ink-faint : root.primary ? S.on-primary : S.ink;
         horizontal-alignment: center;
         vertical-alignment: center;
         width: parent.width;
         height: parent.height;
     }
     ta := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 }
@@ -455,6 +457,11 @@ export component SettingsWindow inherits Window {
 
     in-out property <int> page: 1; // 0 General, 1 Appearance, 2 Modules, 3 Shortcuts, 4 About
     in property <string> saved-key: "";
+    // Changes wait in the window until Save (Islo writes islo.ini and reads it back).
+    in property <bool> dirty: false;
+    in property <int> save-state: 0;      // 0 nothing yet, 1 saved, 2 error
+    in property <string> save-msg: "";    // the error, or where it was saved
+    in property <bool> close-warn: false; // tried to close with unsaved changes
 
     // ---- appearance ----
     in-out property <float> width-px: 200;
@@ -525,6 +532,8 @@ export component SettingsWindow inherits Window {
     in property <bool> has-live: false; // timer / mic / focus indicators
 
     callback changed(string);
+    callback save-changes();
+    callback discard-changes();
     callback reset-position();
     callback restore-defaults();
     callback quit-app();
@@ -574,9 +583,11 @@ export component SettingsWindow inherits Window {
             Rectangle { vertical-stretch: 1; }
         }
 
-        // ---------- page ----------
+        // ---------- page + save bar ----------
+        VerticalLayout {
+        horizontal-stretch: 1;
         Flickable {
-            horizontal-stretch: 1;
+            vertical-stretch: 1;
             content-height: pagebody.preferred-height;
             pagebody := VerticalLayout {
                 width: parent.width;
@@ -623,7 +634,7 @@ export component SettingsWindow inherits Window {
                         Row {
                             first: true;
                             name: "Island width";
-                            desc: "The island on your screen resizes as you drag.";
+                            desc: "How wide the small island is. Press Save to resize it.";
                             saved: root.saved-key == "width";
                             HorizontalLayout {
                                 spacing: 12px;
@@ -733,7 +744,7 @@ export component SettingsWindow inherits Window {
                         Row {
                             name: "Featured on the left";
                             min-h: 78px;
-                            desc: root.pill-glance ? "What sits on the left of the pill while it's quiet. Live activities still take over." : "Turn on Date and battery in the pill to change this.";
+                            desc: root.pill-glance ? "What sits on the left of the pill while it's quiet. Live activities still take over." : "Turn on Clock and battery in the pill to change this.";
                             saved: root.saved-key == "featured";
                             Segmented {
                                 y: 12px;
@@ -746,7 +757,7 @@ export component SettingsWindow inherits Window {
                             name: "Show on the right";
                             new-badge: true;
                             min-h: 78px;
-                            desc: "For the quiet pill and the top of the open island. The time follows your Windows format.";
+                            desc: "For the quiet pill and the top of the open island (shortened there when many tabs need the room). The time follows your Windows format.";
                             saved: root.saved-key == "clock";
                             Segmented {
                                 y: 12px;
@@ -1227,6 +1238,70 @@ export component SettingsWindow inherits Window {
                     }
                 }
             }
+        }
+
+        // Save bar: always there, so it's clear when changes are waiting.
+        Rectangle {
+            height: 64px;
+            background: root.close-warn ? (S.dark ? #2b2310 : #fff4ce) : S.surface-200;
+            animate background { duration: S.quick; }
+            Rectangle { y: 0; height: 1px; background: S.hairline; }
+            HorizontalLayout {
+                padding-left: 32px;
+                padding-right: 24px;
+                spacing: 8px;
+                alignment: stretch;
+                Rectangle {
+                    width: 8px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.dirty ? S.orange : root.save-state == 2 ? #e5484d : S.positive;
+                        opacity: root.dirty || root.save-state != 0 ? 1 : 0;
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: root.save-state == 2 ? "Couldn't save"
+                            : root.close-warn ? "Save your changes before closing?"
+                            : root.dirty ? "You have unsaved changes"
+                            : root.save-state == 1 ? "All changes saved"
+                            : "No changes";
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: S.ink;
+                    }
+                    Text {
+                        text: root.save-state == 2 ? root.save-msg
+                            : root.close-warn ? "Save keeps them, Discard puts the old settings back. Either one closes the window."
+                            : root.dirty ? "They take effect when you press Save."
+                            : root.save-msg;
+                        visible: self.text != "";
+                        font-size: 12px;
+                        color: root.save-state == 2 ? (S.dark ? #ff9592 : #ce2c31) : S.ink-muted;
+                        overflow: elide;
+                    }
+                }
+                Button {
+                    y: 16px;
+                    text: "Discard";
+                    enabled: root.dirty;
+                    clicked => { root.discard-changes(); }
+                }
+                Button {
+                    y: 16px;
+                    text: "Save";
+                    primary: true;
+                    enabled: root.dirty;
+                    clicked => { root.save-changes(); }
+                }
+            }
+        }
         }
     }
 }
